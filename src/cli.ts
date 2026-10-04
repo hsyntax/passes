@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
-import { Cause, Effect, Exit, Fiber } from "effect";
+import { BunRuntime, BunServices } from "@effect/platform-bun";
+import { Cause, Effect, Exit, Runtime } from "effect";
 import { message, PassesError } from "./errors.ts";
 import { runPlan } from "./runner.ts";
 import { loadPlan, renderGraph } from "./stages.ts";
@@ -17,7 +18,7 @@ validate checks YAML and prints the layer graph without invoking Codex.
 run validates, checks Codex's model catalog, then executes each layer.
 All agents use your invocation directory in its existing Git checkout.
 Concurrent stages share files. No commits, worktrees, branches, or artifacts are managed.
-Requires Bun >=1.3 and Codex CLI >=0.159.2; macOS/Linux for execution.
+Requires Bun >=1.4.2 and Codex CLI >=0.159.2; macOS/Linux for execution.
 `;
 const reporter = {
   out: (line: string) => {
@@ -58,29 +59,30 @@ function main(args: readonly string[]) {
 }
 
 let interrupted: NodeJS.Signals | undefined;
-const fiber = Effect.runFork(main(process.argv.slice(2)));
-const stop = (signal: NodeJS.Signals) => {
+const recordSignal = (signal: NodeJS.Signals) => {
   if (interrupted) return;
   interrupted = signal;
   reporter.err(`${signal}: cancelling active stages...`);
-  Effect.runFork(Fiber.interrupt(fiber));
 };
-const sigint = () => stop("SIGINT");
-const sigterm = () => stop("SIGTERM");
+const sigint = () => recordSignal("SIGINT");
+const sigterm = () => recordSignal("SIGTERM");
+// BunRuntime owns interruption; retain which signal arrived for our exit-code contract.
 process.on("SIGINT", sigint);
 process.on("SIGTERM", sigterm);
-// A closed stdout pipe should also cancel descendants, rather than orphaning them.
 const outputError = (error: NodeJS.ErrnoException) => {
-  if (error.code === "EPIPE") stop("SIGTERM");
+  if (error.code === "EPIPE") process.emit("SIGTERM", "SIGTERM");
   else throw error;
 };
 process.stdout.on("error", outputError);
 process.stderr.on("error", outputError);
-const exit = await Effect.runPromise(Fiber.await(fiber));
-process.removeListener("SIGINT", sigint);
-process.removeListener("SIGTERM", sigterm);
-if (interrupted) process.exitCode = interrupted === "SIGINT" ? 130 : 143;
-else if (Exit.isFailure(exit)) {
-  reporter.err(`passes: ${message(Cause.squash(exit.cause))}`);
-  process.exitCode = 1;
-}
+
+BunRuntime.runMain(main(process.argv.slice(2)).pipe(Effect.provide(BunServices.layer)), {
+  disableErrorReporting: true,
+  teardown(exit, onExit) {
+    process.removeListener("SIGINT", sigint);
+    process.removeListener("SIGTERM", sigterm);
+    if (interrupted) return onExit(interrupted === "SIGINT" ? 130 : 143);
+    if (Exit.isFailure(exit)) reporter.err(`passes: ${message(Cause.squash(exit.cause))}`);
+    Runtime.defaultTeardown(exit, onExit);
+  },
+});

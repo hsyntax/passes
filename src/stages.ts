@@ -1,6 +1,4 @@
-import { readdir, readFile, stat } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
-import { Effect, Schema } from "effect";
+import { Effect, FileSystem, Path, type PlatformError, Schema } from "effect";
 import { parseDocument } from "yaml";
 import { message, PassesError } from "./errors.ts";
 
@@ -86,70 +84,91 @@ export function parseStage(source: string, file: string): Stage {
   return { ...metadata, slug, prompt, file };
 }
 
-async function discover(directory: string): Promise<string[]> {
-  if (!(await stat(directory)).isDirectory())
-    throw new PassesError(`${directory}: expected a stages directory`);
-  const files: string[] = [];
-  async function walk(dir: string): Promise<void> {
-    const entries = await readdir(dir, { withFileTypes: true });
-    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    for (const entry of entries) {
-      const path = join(dir, entry.name);
-      // Never follow links, including links that could leave the supplied stage tree.
-      if (entry.isDirectory()) await walk(path);
-      else if (entry.isFile() && /\.md$/i.test(entry.name)) files.push(path);
-    }
-  }
-  await walk(directory);
-  return files;
-}
-
 export const loadPlan = (directory: string, cwd: string) =>
-  Effect.tryPromise({
-    try: async (): Promise<Plan> => {
-      const absolute = resolve(cwd, directory);
-      const paths = await discover(absolute);
-      if (!paths.length) throw new PassesError(`${directory}: no Markdown (.md) stages found`);
-      const stages: Stage[] = [];
-      const errors: string[] = [];
-      const names = new Map<string, string>();
-      const slugs = new Map<string, string>();
-      for (const path of paths) {
-        const file = relative(cwd, path) || path;
-        try {
-          const stage = parseStage(await readFile(path, "utf8"), file);
-          const duplicate = names.get(stage.name);
-          const collision = slugs.get(stage.slug);
-          if (duplicate)
-            throw new PassesError(`${file}: name "${stage.name}" duplicates ${duplicate}`);
-          if (collision)
-            throw new PassesError(
-              `${file}: name "${stage.name}" has slug "${stage.slug}", which collides with ${collision}`,
-            );
-          names.set(stage.name, file);
-          slugs.set(stage.slug, file);
-          stages.push(stage);
-        } catch (error) {
-          errors.push(message(error));
-        }
-      }
-      if (errors.length)
-        throw new PassesError(
-          `Invalid stage configuration:\n${errors.map((e) => `  ${e}`).join("\n")}`,
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const absolute = path.resolve(cwd, directory);
+    if ((yield* fs.stat(absolute)).type !== "Directory")
+      return yield* Effect.fail(new PassesError(`${absolute}: expected a stages directory`));
+    const paths: string[] = [];
+    const walk = Effect.fnUntraced(function* (
+      dir: string,
+    ): Effect.fn.Return<void, PlatformError.PlatformError> {
+      const entries = (yield* fs.readDirectory(dir)).sort();
+      for (const entry of entries) {
+        const file = path.join(dir, entry);
+        // FileSystem.stat follows links. Probe readLink first, including dangling links.
+        const isLink = yield* fs.readLink(file).pipe(
+          Effect.as(true),
+          Effect.catch((error) =>
+            (error.cause as NodeJS.ErrnoException | undefined)?.code === "EINVAL"
+              ? Effect.succeed(false)
+              : Effect.fail(error),
+          ),
         );
-      const steps = [...new Set(stages.map((s) => s.step))].sort((a, b) => a - b);
-      return {
-        cwd,
-        directory: absolute,
-        stages,
-        layers: steps.map((step) => ({ step, stages: stages.filter((s) => s.step === step) })),
-      };
-    },
-    catch: (error) =>
+        if (isLink) continue;
+        const info = yield* fs.stat(file);
+        if (info.type === "Directory") yield* walk(file);
+        else if (info.type === "File" && /\.md$/i.test(entry)) paths.push(file);
+      }
+    });
+    yield* walk(absolute);
+    if (!paths.length)
+      return yield* Effect.fail(new PassesError(`${directory}: no Markdown (.md) stages found`));
+    const stages: Stage[] = [];
+    const errors: string[] = [];
+    const names = new Map<string, string>();
+    const slugs = new Map<string, string>();
+    for (const filename of paths) {
+      const file = path.relative(cwd, filename) || filename;
+      yield* Effect.gen(function* () {
+        const source = yield* fs.readFileString(filename);
+        const stage = yield* Effect.try({
+          try: () => parseStage(source, file),
+          catch: (error) => new PassesError(message(error)),
+        });
+        const duplicate = names.get(stage.name);
+        const collision = slugs.get(stage.slug);
+        if (duplicate)
+          return yield* Effect.fail(
+            new PassesError(`${file}: name "${stage.name}" duplicates ${duplicate}`),
+          );
+        if (collision)
+          return yield* Effect.fail(
+            new PassesError(
+              `${file}: name "${stage.name}" has slug "${stage.slug}", which collides with ${collision}`,
+            ),
+          );
+        names.set(stage.name, file);
+        slugs.set(stage.slug, file);
+        stages.push(stage);
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.sync(() => {
+            errors.push(message(error));
+          }),
+        ),
+      );
+    }
+    if (errors.length)
+      return yield* Effect.fail(
+        new PassesError(`Invalid stage configuration:\n${errors.map((e) => `  ${e}`).join("\n")}`),
+      );
+    const steps = [...new Set(stages.map((s) => s.step))].sort((a, b) => a - b);
+    return {
+      cwd,
+      directory: absolute,
+      stages,
+      layers: steps.map((step) => ({ step, stages: stages.filter((s) => s.step === step) })),
+    } satisfies Plan;
+  }).pipe(
+    Effect.mapError((error) =>
       error instanceof PassesError
         ? error
         : new PassesError(`Could not read stages: ${message(error)}`),
-  });
+    ),
+  );
 
 export function renderGraph(plan: Plan): string {
   const lines = [

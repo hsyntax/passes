@@ -1,24 +1,12 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { Effect } from "effect";
+import { describe, expect, it, test } from "@effect/vitest";
+import { BunFileSystem, BunPath } from "@effect/platform-bun";
+import { Effect, FileSystem, Layer, Path } from "effect";
 import { execArgs } from "../src/codex.ts";
 import { lineReporter } from "../src/process.ts";
 import { loadPlan, parseStage, renderGraph, slugify } from "../src/stages.ts";
 
 const header = "name: Example\nstep: 0\nmodel: mock-model\nreasoning_effort: medium";
 const document = (yaml = header, body = "Do the work.\n") => `---\n${yaml}\n---\n${body}`;
-const roots: string[] = [];
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
-});
-async function root() {
-  const path = await mkdtemp(join(tmpdir(), "passes-stages-"));
-  roots.push(path);
-  return path;
-}
-
 describe("frontmatter", () => {
   test("trims metadata, preserves the exact Markdown body, and derives a stable slug", () => {
     // Stage bodies are deliberately literal.
@@ -99,77 +87,96 @@ describe("frontmatter", () => {
   }
 });
 
-describe("discovery and graph", () => {
-  test("discovers nested Markdown deterministically, ignores symlinks and non-Markdown, and orders numeric layers", async () => {
-    const cwd = await root();
-    const dir = join(cwd, "stages");
-    await mkdir(join(dir, "nested"), { recursive: true });
-    await writeFile(
-      join(dir, "z.MD"),
-      document(header.replace("Example", "Last").replace("step: 0", "step: 20")),
-    );
-    await writeFile(join(dir, "b.md"), document(header.replace("Example", "Second")));
-    await writeFile(join(dir, "a.md"), document(header.replace("Example", "First")));
-    await writeFile(
-      join(dir, "nested", "later.md"),
-      document(header.replace("Example", "Later").replace("step: 0", "step: 3")),
-    );
-    await writeFile(join(dir, "ignored.txt"), "not a stage");
-    await symlink(join(dir, "a.md"), join(dir, "linked.md"));
-    await symlink(dir, join(dir, "cycle"));
-    const plan = await Effect.runPromise(loadPlan("./stages", cwd));
-    expect(plan.stages.map((s) => s.name)).toEqual(["First", "Second", "Later", "Last"]);
-    expect(plan.layers.map((l) => l.step)).toEqual([0, 3, 20]);
-    expect(plan.layers[0]?.stages.map((s) => s.name)).toEqual(["First", "Second"]);
-    const graph = renderGraph(plan);
-    expect(graph).toContain("Valid: 4 stages, 3 layers");
-    expect(graph).toContain("wait for all stages");
-    expect(graph).toContain("[concurrent, shared checkout]");
-    expect(graph.indexOf("Step 3")).toBeLessThan(graph.indexOf("Step 20"));
+it.layer(Layer.mergeAll(BunFileSystem.layer, BunPath.layer))("discovery and graph", (it) => {
+  const workspace = Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "passes-stages-" });
+    return { fs, cwd, join: path.join };
   });
-  test("rejects trimmed duplicate names across different steps", async () => {
-    const cwd = await root();
-    await writeFile(join(cwd, "a.md"), document());
-    await writeFile(
-      join(cwd, "b.md"),
-      document(header.replace("Example", '" Example "').replace("step: 0", "step: 8")),
-    );
-    await expect(Effect.runPromise(loadPlan(".", cwd))).rejects.toThrow(
-      'name "Example" duplicates a.md',
-    );
-  });
-  test("rejects case, punctuation and accent slug collisions across steps", async () => {
-    const cwd = await root();
-    await writeFile(join(cwd, "a.md"), document(header.replace("Example", "Hello World")));
-    await writeFile(
-      join(cwd, "b.md"),
-      document(header.replace("Example", "Héllo-world!").replace("step: 0", "step: 2")),
-    );
-    await expect(Effect.runPromise(loadPlan(".", cwd))).rejects.toThrow('slug "hello-world"');
-  });
-  test("aggregates file-specific configuration errors", async () => {
-    const cwd = await root();
-    await writeFile(join(cwd, "a.md"), document(header.replace("step: 0", "step: -1")));
-    await writeFile(join(cwd, "b.md"), document(`${header}\noutputs: []`));
-    try {
-      await Effect.runPromise(loadPlan(".", cwd));
-      throw new Error("unexpected success");
-    } catch (error) {
-      expect(String(error)).toContain("a.md");
-      expect(String(error)).toContain("b.md");
-    }
-  });
-  test("rejects empty sets, files instead of directories, and missing directories", async () => {
-    const cwd = await root();
-    await expect(Effect.runPromise(loadPlan(".", cwd))).rejects.toThrow("no Markdown");
-    await writeFile(join(cwd, "file.md"), document());
-    await expect(Effect.runPromise(loadPlan("file.md", cwd))).rejects.toThrow(
-      "expected a stages directory",
-    );
-    await expect(Effect.runPromise(loadPlan("missing", cwd))).rejects.toThrow(
-      "Could not read stages",
-    );
-  });
+
+  it.effect(
+    "discovers nested Markdown deterministically, ignores symlinks and non-Markdown, and orders numeric layers",
+    () =>
+      Effect.gen(function* () {
+        const { fs, cwd, join } = yield* workspace;
+        const dir = join(cwd, "stages");
+        yield* fs.makeDirectory(join(dir, "nested"), { recursive: true });
+        yield* fs.writeFileString(
+          join(dir, "z.MD"),
+          document(header.replace("Example", "Last").replace("step: 0", "step: 20")),
+        );
+        yield* fs.writeFileString(join(dir, "b.md"), document(header.replace("Example", "Second")));
+        yield* fs.writeFileString(join(dir, "a.md"), document(header.replace("Example", "First")));
+        yield* fs.writeFileString(
+          join(dir, "nested", "later.md"),
+          document(header.replace("Example", "Later").replace("step: 0", "step: 3")),
+        );
+        yield* fs.writeFileString(join(dir, "ignored.txt"), "not a stage");
+        yield* fs.symlink(join(dir, "a.md"), join(dir, "linked.md"));
+        yield* fs.symlink(dir, join(dir, "cycle"));
+        yield* fs.symlink(join(dir, "missing"), join(dir, "dangling.md"));
+        const plan = yield* loadPlan("./stages", cwd);
+        expect(plan.stages.map((s) => s.name)).toEqual(["First", "Second", "Later", "Last"]);
+        expect(plan.layers.map((l) => l.step)).toEqual([0, 3, 20]);
+        expect(plan.layers[0]?.stages.map((s) => s.name)).toEqual(["First", "Second"]);
+        const graph = renderGraph(plan);
+        expect(graph).toContain("Valid: 4 stages, 3 layers");
+        expect(graph).toContain("wait for all stages");
+        expect(graph).toContain("[concurrent, shared checkout]");
+        expect(graph.indexOf("Step 3")).toBeLessThan(graph.indexOf("Step 20"));
+      }),
+  );
+  it.effect("rejects trimmed duplicate names across different steps", () =>
+    Effect.gen(function* () {
+      const { fs, cwd, join } = yield* workspace;
+      yield* fs.writeFileString(join(cwd, "a.md"), document());
+      yield* fs.writeFileString(
+        join(cwd, "b.md"),
+        document(header.replace("Example", '" Example "').replace("step: 0", "step: 8")),
+      );
+      const error = yield* Effect.flip(loadPlan(".", cwd));
+      expect(error.message).toContain('name "Example" duplicates a.md');
+    }),
+  );
+  it.effect("rejects case, punctuation and accent slug collisions across steps", () =>
+    Effect.gen(function* () {
+      const { fs, cwd, join } = yield* workspace;
+      yield* fs.writeFileString(
+        join(cwd, "a.md"),
+        document(header.replace("Example", "Hello World")),
+      );
+      yield* fs.writeFileString(
+        join(cwd, "b.md"),
+        document(header.replace("Example", "Héllo-world!").replace("step: 0", "step: 2")),
+      );
+      const error = yield* Effect.flip(loadPlan(".", cwd));
+      expect(error.message).toContain('slug "hello-world"');
+    }),
+  );
+  it.effect("aggregates file-specific configuration errors", () =>
+    Effect.gen(function* () {
+      const { fs, cwd, join } = yield* workspace;
+      yield* fs.writeFileString(join(cwd, "a.md"), document(header.replace("step: 0", "step: -1")));
+      yield* fs.writeFileString(join(cwd, "b.md"), document(`${header}\noutputs: []`));
+      const error = yield* Effect.flip(loadPlan(".", cwd));
+      expect(error.message).toContain("a.md");
+      expect(error.message).toContain("b.md");
+    }),
+  );
+  it.effect("rejects empty sets, files instead of directories, and missing directories", () =>
+    Effect.gen(function* () {
+      const { fs, cwd, join } = yield* workspace;
+      expect((yield* Effect.flip(loadPlan(".", cwd))).message).toContain("no Markdown");
+      yield* fs.writeFileString(join(cwd, "file.md"), document());
+      expect((yield* Effect.flip(loadPlan("file.md", cwd))).message).toContain(
+        "expected a stages directory",
+      );
+      expect((yield* Effect.flip(loadPlan("missing", cwd))).message).toContain(
+        "Could not read stages",
+      );
+    }),
+  );
 });
 
 test("argv preserves quoted values as one argument and has no shell or persistence flags", () => {

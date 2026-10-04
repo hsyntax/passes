@@ -11,7 +11,11 @@ interface Directive {
   waitForDescendantOf?: string[];
   delayMs?: number;
   exitCode?: number;
+  exitSignal?: NodeJS.Signals;
+  descendantOutput?: boolean;
   hold?: boolean;
+  tickOutput?: boolean;
+  termOutput?: string;
   ignoreTerm?: boolean;
   spawnDescendant?: boolean;
   stdout?: string;
@@ -85,6 +89,10 @@ if (args[0] === "--version") {
       result = { userAgent: "passes-test-fixture/1.0" };
     } else if (request.method === "model/list") {
       if (process.env.PASSES_TEST_CATALOG_MODE === "hold") continue;
+      if (process.env.PASSES_TEST_CATALOG_MODE === "oversized") {
+        process.stdout.write("x".repeat(1_048_577));
+        continue;
+      }
       if (process.env.PASSES_TEST_CATALOG_MODE === "invalid") {
         process.stdout.write("not JSON\n");
         continue;
@@ -136,6 +144,7 @@ if (args[0] === "--version") {
   log({ kind: "start", id: directive.id, pid: process.pid, args, cwd: process.cwd(), prompt });
   process.on("SIGTERM", () => {
     log({ kind: "term", id: directive.id, pid: process.pid });
+    if (directive.termOutput) process.stdout.write(directive.termOutput);
     if (!directive.ignoreTerm) process.exit(143);
   });
   if (directive.appendFile) {
@@ -146,10 +155,15 @@ if (args[0] === "--version") {
   if (directive.spawnDescendant) {
     Bun.spawn([process.execPath, import.meta.path, "__descendant", directive.id], {
       stdin: "ignore",
-      stdout: "ignore",
-      stderr: "ignore",
+      stdout: directive.descendantOutput ? "inherit" : "ignore",
+      stderr: directive.descendantOutput ? "inherit" : "ignore",
       env: process.env,
     });
+  }
+  if (directive.spawnDescendant) {
+    await waitFor(() =>
+      events().some((event) => event.kind === "descendant" && event.id === directive.id),
+    );
   }
   if (directive.barrier) {
     await waitFor(
@@ -169,12 +183,16 @@ if (args[0] === "--version") {
   }
   if (directive.stdout) process.stdout.write(directive.stdout);
   if (directive.stderr) process.stderr.write(directive.stderr);
+  log({ kind: "output-written", id: directive.id, pid: process.pid });
   if (directive.hold) {
-    setInterval(() => {}, 1_000);
+    setInterval(() => {
+      if (directive.tickOutput) process.stdout.write("still running\n");
+    }, 25);
   } else {
     await Bun.sleep(directive.delayMs ?? 0);
     log({ kind: "finish", id: directive.id, pid: process.pid, exitCode: directive.exitCode ?? 0 });
-    process.exit(directive.exitCode ?? 0);
+    if (directive.exitSignal) process.kill(process.pid, directive.exitSignal);
+    else process.exit(directive.exitCode ?? 0);
   }
 } else {
   log({ kind: "unexpected", args, pid: process.pid });

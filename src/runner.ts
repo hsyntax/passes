@@ -1,7 +1,7 @@
-import { Effect } from "effect";
+import { Effect, Fiber, Stream } from "effect";
 import { execArgs, preflight } from "./codex.ts";
-import { PassesError } from "./errors.ts";
-import { lineReporter, startProcess, waitForExit } from "./process.ts";
+import { message, PassesError } from "./errors.ts";
+import { lineReporter, startProcess } from "./process.ts";
 import type { Plan, Stage } from "./stages.ts";
 
 export interface Reporter {
@@ -23,18 +23,31 @@ function runStage(stage: Stage, cwd: string, reporter: Reporter) {
         }),
       );
       const proc = yield* startProcess("codex", execArgs(stage, cwd), cwd);
-      proc.child.stdout.on("data", stdout.data);
-      proc.child.stderr.on("data", stderr.data);
-      proc.child.stdin.end(stage.prompt);
-      const result = yield* waitForExit(proc);
-      if (result.code !== 0)
+      const out = yield* proc.stdout.pipe(
+        Stream.runForEach((chunk) => Effect.sync(() => stdout.data(chunk))),
+        Effect.forkScoped,
+      );
+      const err = yield* proc.stderr.pipe(
+        Stream.runForEach((chunk) => Effect.sync(() => stderr.data(chunk))),
+        Effect.forkScoped,
+      );
+      const drain = Effect.all([Fiber.join(out), Fiber.join(err)], { concurrency: "unbounded" });
+      // Run before forkScoped finalizers so output still drains during termination.
+      yield* Effect.addFinalizer(() =>
+        proc.stop.pipe(
+          Effect.andThen(drain.pipe(Effect.timeout(1_000), Effect.interruptible, Effect.ignore)),
+        ),
+      );
+      // Early process exit can close stdin; report the process outcome in that case.
+      yield* Stream.run(Stream.make(new TextEncoder().encode(stage.prompt)), proc.stdin).pipe(
+        Effect.ignore,
+      );
+      const code = yield* proc.exitCode;
+      if (code !== 0)
         return yield* Effect.fail(
-          new PassesError(
-            `${stage.name} (${stage.file}): failed with ${result.signal ? `signal ${result.signal}` : `exit code ${result.code}`}`,
-          ),
+          new PassesError(`${stage.name} (${stage.file}): failed with exit code ${code}`),
         );
-      // Drain final output, but never hang forever on a descendant holding the pipe open.
-      yield* Effect.promise(() => proc.closed).pipe(
+      yield* drain.pipe(
         Effect.timeout(1_000),
         Effect.mapError(
           () =>
@@ -48,6 +61,11 @@ function runStage(stage: Stage, cwd: string, reporter: Reporter) {
       yield* Effect.sync(() => reporter.out(`${stage.name}: completed`));
     }),
   ).pipe(
+    Effect.mapError((error) =>
+      error instanceof PassesError
+        ? error
+        : new PassesError(`${stage.name} (${stage.file}): ${message(error)}`),
+    ),
     Effect.tapError((error) => Effect.sync(() => reporter.err(error.message))),
     Effect.onInterrupt(() => Effect.sync(() => reporter.err(`${stage.name}: cancelled`))),
   );

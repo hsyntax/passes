@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "@effect/vitest";
 import {
   chmodSync,
   existsSync,
@@ -9,14 +9,17 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-const project = resolve(import.meta.dir, "..");
+const testDirectory = dirname(fileURLToPath(import.meta.url));
+const project = resolve(testDirectory, "..");
 const cli = join(project, "src/cli.ts");
-const fixture = join(import.meta.dir, "fixtures/codex.ts");
+const fixture = join(testDirectory, "fixtures/codex.ts");
 const temporary: Workspace[] = [];
-const runners: ReturnType<typeof Bun.spawn>[] = [];
+const runners: ChildProcess[] = [];
 const timeout = 20_000;
 
 interface Event {
@@ -62,14 +65,11 @@ function workspace({ git = true, nested = false } = {}): Workspace {
   mkdirSync(stages, { recursive: true });
   mkdirSync(bin);
   if (git) {
-    const result = Bun.spawnSync(["git", "init", "--quiet", repo]);
-    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+    const result = spawnSync("git", ["init", "--quiet", repo]);
+    if (result.status !== 0) throw new Error(result.stderr.toString());
   }
   const executable = join(bin, "codex");
-  writeFileSync(
-    executable,
-    `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(fixture)} "$@"\n`,
-  );
+  writeFileSync(executable, `#!/bin/sh\nexec ${shellQuote("bun")} ${shellQuote(fixture)} "$@"\n`);
   chmodSync(executable, 0o755);
   const eventPath = join(root, "events.jsonl");
   const ws = {
@@ -119,22 +119,29 @@ function events(ws: Workspace): Event[] {
 }
 
 function launch(ws: Workspace, args: readonly string[] = ["run", "stages"]) {
-  const child = Bun.spawn([process.execPath, cli, ...args], {
+  const child = spawn("bun", [cli, ...args], {
     cwd: ws.cwd,
     env: ws.env,
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
+    stdio: ["ignore", "pipe", "pipe"],
   });
   runners.push(child);
-  const stdout = new Response(child.stdout).text();
-  const stderr = new Response(child.stderr).text();
-  const result = Promise.all([child.exited, stdout, stderr]).then(([code, out, err]) => ({
-    code,
-    stdout: out,
-    stderr: err,
-    output: out + err,
-  }));
+  let out = "";
+  let err = "";
+  child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+    out += chunk;
+  });
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+    err += chunk;
+  });
+  const result = new Promise<{
+    code: number | null;
+    stdout: string;
+    stderr: string;
+    output: string;
+  }>((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stdout: out, stderr: err, output: out + err }));
+  });
   return { child, result };
 }
 
@@ -142,7 +149,7 @@ async function waitFor(predicate: () => boolean, description: string, ms = 8_000
   const deadline = Date.now() + ms;
   while (!predicate()) {
     if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${description}`);
-    await Bun.sleep(15);
+    await new Promise((resolve) => setTimeout(resolve, 15));
   }
 }
 
@@ -166,7 +173,8 @@ async function expectFixtureStopped(ws: Workspace): Promise<void> {
 afterEach(async () => {
   for (const child of runners.splice(0)) {
     if (child.exitCode === null) child.kill("SIGKILL");
-    await child.exited;
+    if (child.exitCode === null && child.signalCode === null)
+      await new Promise<void>((resolve) => child.once("close", () => resolve()));
   }
   for (const ws of temporary.splice(0)) {
     for (const event of events(ws)) {
@@ -490,23 +498,104 @@ describe("passes CLI acceptance", () => {
     timeout,
   );
 
+  test.each([
+    { label: "successful leader", exitCode: 0, expectedCode: 0, descendantOutput: false },
+    { label: "failed leader", exitCode: 17, expectedCode: 1, descendantOutput: false },
+    { label: "signalled leader", exitSignal: "SIGKILL", expectedCode: 1, descendantOutput: false },
+    {
+      label: "descendant holding output open",
+      exitCode: 0,
+      expectedCode: 1,
+      descendantOutput: true,
+    },
+  ])(
+    "cleans stubborn descendants after $label exits",
+    async ({ expectedCode, ...options }) => {
+      const ws = workspace();
+      stage(ws, "orphan.md", {
+        name: "Orphan stage",
+        prompt: directive("orphan", {
+          ...options,
+          spawnDescendant: true,
+          stdout: "partial output",
+        }),
+      });
+      const result = await launch(ws).result;
+      expect(result.code).toBe(expectedCode);
+      expect(result.output).toContain("partial output");
+      if (options.exitSignal) expect(result.output).toContain(options.exitSignal);
+      if (options.descendantOutput) expect(result.output).toContain("kept its output pipe open");
+      await expectFixtureStopped(ws);
+    },
+    timeout,
+  );
+
+  test(
+    "a closed output pipe cancels the process group",
+    async () => {
+      const ws = workspace();
+      stage(ws, "waiting.md", {
+        prompt: directive("waiting", {
+          hold: true,
+          ignoreTerm: true,
+          spawnDescendant: true,
+          tickOutput: true,
+        }),
+      });
+      const { child, result } = launch(ws);
+      await waitFor(
+        () => events(ws).some((event) => event.kind === "descendant"),
+        "descendant readiness",
+      );
+      child.stdout.destroy();
+      expect((await result).code).toBe(143);
+      await expectFixtureStopped(ws);
+    },
+    timeout,
+  );
+
+  test(
+    "rejects oversized catalog frames and stops the app-server",
+    async () => {
+      const ws = workspace();
+      ws.env.PASSES_TEST_CATALOG_MODE = "oversized";
+      stage(ws, "stage.md");
+      const result = await launch(ws).result;
+      expect(result.code).toBe(1);
+      expect(result.output).toContain("exceeded 1 MiB");
+      expect(events(ws).some((event) => event.kind === "start")).toBe(false);
+      await expectFixtureStopped(ws);
+    },
+    timeout,
+  );
+
   test.each(["SIGINT", "SIGTERM"] as const)(
     "%s exits nonzero and cleans subprocess trees",
     async (signal) => {
       const ws = workspace();
       stage(ws, "waiting.md", {
         name: "Waiting stage",
-        prompt: directive("waiting", { hold: true, ignoreTerm: true, spawnDescendant: true }),
+        prompt: directive("waiting", {
+          hold: true,
+          ignoreTerm: true,
+          spawnDescendant: true,
+          termOutput: "cleanup output",
+          stdout: "partial stdout",
+          stderr: "partial stderr",
+        }),
       });
       stage(ws, "later.md", { step: 2, prompt: directive("later") });
       const { child, result } = launch(ws);
       await waitFor(
-        () => events(ws).some((event) => event.kind === "descendant"),
-        "descendant readiness",
+        () => events(ws).some((event) => event.kind === "output-written"),
+        "stage output",
       );
       child.kill(signal);
       const completed = await result;
       expect(completed.code).toBe(signal === "SIGINT" ? 130 : 143);
+      expect(completed.output).toContain("partial stdout");
+      expect(completed.output).toContain("partial stderr");
+      expect(completed.output).toContain("cleanup output");
       expect(events(ws).some((event) => event.kind === "start" && event.id === "later")).toBe(
         false,
       );

@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Effect, Queue, Schema, Stream } from "effect";
 import { message, PassesError } from "./errors.ts";
 import { collectProcess, startProcess } from "./process.ts";
 import type { Plan, Stage } from "./stages.ts";
@@ -39,111 +39,127 @@ export function readCatalog(cwd: string) {
   return Effect.scoped(
     Effect.gen(function* () {
       const proc = yield* startProcess("codex", ["app-server", "--listen", "stdio://"], cwd);
-      return yield* Effect.callback<readonly Model[], PassesError>((resume) => {
-        let pending = "";
-        let stderr = "";
-        let finished = false;
-        let requestId = 1;
-        let initialized = false;
-        const models: Model[] = [];
-        const cursors = new Set<string>();
-        const finish = (result: Effect.Effect<readonly Model[], PassesError>) => {
-          if (finished) return;
-          finished = true;
-          resume(result);
-        };
-        const fail = (error: unknown) =>
-          finish(
-            Effect.fail(
-              new PassesError(
-                `Codex model catalog: ${message(error)}${stderr ? `\n${stderr.trim()}` : ""}`,
-              ),
-            ),
-          );
-        const send = (request: object) => {
-          proc.child.stdin.write(`${JSON.stringify(request)}\n`);
-        };
-        const list = (cursor?: string) => {
-          requestId += 1;
-          send({
-            id: requestId,
-            method: "model/list",
-            params: { limit: 100, includeHidden: true, ...(cursor ? { cursor } : {}) },
-          });
-        };
-        const handle = (line: string) => {
-          if (finished || !line.trim()) return;
-          try {
+      const requests = yield* Queue.make<string>();
+      const send = (request: object) => Queue.offer(requests, `${JSON.stringify(request)}\n`);
+      let pending = "";
+      let stderr = "";
+      let requestId = 1;
+      let initialized = false;
+      let finished = false;
+      const models: Model[] = [];
+      const cursors = new Set<string>();
+      const list = (cursor?: string) => {
+        requestId += 1;
+        return send({
+          id: requestId,
+          method: "model/list",
+          params: {
+            limit: 100,
+            includeHidden: true,
+            ...(cursor ? { cursor } : {}),
+          },
+        });
+      };
+      const handle = Effect.fnUntraced(function* (line: string) {
+        if (!line.trim()) return;
+        const rpc = yield* Effect.try({
+          try: () => {
             const response: unknown = JSON.parse(line);
             if (!response || typeof response !== "object")
               throw new Error("invalid JSON-RPC message");
-            const rpc = response as Record<string, unknown>;
-            if (rpc.id !== requestId) return; // Notifications and unrelated responses are not catalog results.
-            if (rpc.error) throw new Error(JSON.stringify(rpc.error));
-            if (!("result" in rpc)) throw new Error("response has no result");
-            if (!initialized) {
-              initialized = true;
-              send({ method: "initialized", params: {} });
-              list();
-              return;
-            }
-            const page = Schema.decodeUnknownSync(CatalogPage)(rpc.result);
-            models.push(...page.data);
-            if (page.nextCursor) {
-              if (cursors.has(page.nextCursor))
-                throw new Error("server repeated its pagination cursor");
-              cursors.add(page.nextCursor);
-              if (cursors.size > 100) throw new Error("catalog exceeded 100 pages");
-              list(page.nextCursor);
-            } else if (!models.length) {
-              throw new Error(
-                "server returned no models; check Codex installation/provider configuration",
-              );
-            } else finish(Effect.succeed(models));
-          } catch (error) {
-            fail(error);
-          }
-        };
-        // setEncoding preserves split Unicode characters across chunks.
-        proc.child.stdout.setEncoding("utf8");
-        const onData = (chunk: string) => {
-          pending += chunk;
-          let newline = pending.indexOf("\n");
-          while (newline >= 0) {
-            handle(pending.slice(0, newline));
-            pending = pending.slice(newline + 1);
-            newline = pending.indexOf("\n");
-          }
-          if (pending.length > 1_048_576) fail("response exceeded 1 MiB without a newline");
-        };
-        const onStderr = (chunk: Buffer) => {
-          stderr = (stderr + chunk.toString()).slice(-8_000);
-        };
-        proc.child.stdout.on("data", onData);
-        proc.child.stderr.on("data", onStderr);
-        void proc.result.then(
-          (result) =>
-            fail(`app-server exited before returning a catalog (${result.code ?? result.signal})`),
-          fail,
-        );
-        send({
-          id: 1,
-          method: "initialize",
-          params: {
-            clientInfo: { name: "passes_runner", title: "Passes Runner", version: "0.1.0" },
-            capabilities: { explicitGatewayOauth: true },
+            return response as Record<string, unknown>;
           },
+          catch: (error) => new PassesError(message(error)),
         });
-        return Effect.sync(() => {
-          finished = true;
-          proc.child.stdout.removeListener("data", onData);
-          proc.child.stderr.removeListener("data", onStderr);
-        });
-      }).pipe(
+        if (rpc.id !== requestId) return;
+        if (rpc.error) return yield* Effect.fail(new PassesError(JSON.stringify(rpc.error)));
+        if (!("result" in rpc))
+          return yield* Effect.fail(new PassesError("response has no result"));
+        if (!initialized) {
+          initialized = true;
+          yield* send({ method: "initialized", params: {} });
+          yield* list();
+          return;
+        }
+        const page = yield* Schema.decodeUnknownEffect(CatalogPage)(rpc.result);
+        models.push(...page.data);
+        if (page.nextCursor) {
+          if (cursors.has(page.nextCursor))
+            return yield* Effect.fail(new PassesError("server repeated its pagination cursor"));
+          cursors.add(page.nextCursor);
+          if (cursors.size > 100)
+            return yield* Effect.fail(new PassesError("catalog exceeded 100 pages"));
+          yield* list(page.nextCursor);
+        } else if (!models.length) {
+          return yield* Effect.fail(
+            new PassesError(
+              "server returned no models; check Codex installation/provider configuration",
+            ),
+          );
+        } else finished = true;
+      });
+      const read = proc.stdout.pipe(
+        Stream.decodeText(),
+        Stream.runForEachWhile((chunk) =>
+          Effect.gen(function* () {
+            pending += chunk;
+            let newline = pending.indexOf("\n");
+            while (newline >= 0 && !finished) {
+              if (newline > 1_048_576)
+                return yield* Effect.fail(new PassesError("response exceeded 1 MiB"));
+              yield* handle(pending.slice(0, newline));
+              pending = pending.slice(newline + 1);
+              newline = pending.indexOf("\n");
+            }
+            if (!finished && pending.length > 1_048_576)
+              return yield* Effect.fail(
+                new PassesError("response exceeded 1 MiB without a newline"),
+              );
+            return !finished;
+          }),
+        ),
+        Effect.flatMap(() =>
+          finished
+            ? Effect.succeed(models)
+            : Effect.fail(new PassesError("app-server closed stdout before returning a catalog")),
+        ),
+      );
+      yield* send({
+        id: 1,
+        method: "initialize",
+        params: {
+          clientInfo: { name: "passes_runner", title: "Passes Runner", version: "0.1.0" },
+          capabilities: { explicitGatewayOauth: true },
+        },
+      });
+      return yield* Effect.raceAllFirst([
+        read,
+        Stream.fromQueue(requests).pipe(
+          Stream.encodeText,
+          Stream.run(proc.stdin),
+          Effect.andThen(Effect.never),
+        ),
+        proc.stderr.pipe(
+          Stream.decodeText(),
+          Stream.runForEach((chunk) =>
+            Effect.sync(() => {
+              stderr = (stderr + chunk).slice(-8_000);
+            }),
+          ),
+          Effect.andThen(Effect.never),
+        ),
+        proc.exitCode.pipe(
+          Effect.flatMap((code) =>
+            Effect.fail(new PassesError(`app-server exited before returning a catalog (${code})`)),
+          ),
+        ),
+      ]).pipe(
         Effect.timeout(15_000),
         Effect.mapError(
           (error) =>
-            new PassesError(`Could not check Codex model compatibility: ${message(error)}`),
+            new PassesError(
+              `Could not check Codex model compatibility: ${message(error)}${stderr ? `\n${stderr.trim()}` : ""}`,
+            ),
         ),
       );
     }),

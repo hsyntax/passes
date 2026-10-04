@@ -14,7 +14,7 @@ are needed to install, validate, build, or test this package.
 # In this package directory
 bun install --frozen-lockfile
 bun run check
-bun src/cli.ts validate ./examples/stages
+bun src/cli.ts validate ./stages
 ```
 
 From the repository and exact directory where the agents should work:
@@ -161,8 +161,12 @@ stage or automatic rollback is imposed.
 
 ## Development
 
+Tests run in Node.js using Vitest 5 and `@effect/vitest` 4; use Node.js 24 LTS
+(or another Node version supported by Vitest 5). The CLI and fake Codex subprocesses
+still run in Bun. Use `bun run test`, rather than Bun's built-in `bun test` runner.
+
 ```sh
-bun test             # parser/discovery/unit + stubbed CLI integration tests
+bun run test         # Vitest + @effect/vitest; unit and stubbed CLI integration tests
 bun run typecheck    # TypeScript strict mode
 bun run lint         # Oxlint checks
 bun run lint:fix     # apply Oxlint fixes
@@ -176,8 +180,16 @@ All tests use temporary Git repositories and a fake Codex executable placed firs
 on the subprocess `PATH`. They make no inference requests, configure no real
 account, and do not modify a user's Git working tree. See `TESTING.md`.
 
-Runtime dependencies are Effect v4 and `yaml`. The project deliberately avoids
-worktree libraries, databases, external services, or a second workflow format.
+Runtime dependencies are Effect v4, `@effect/platform-bun`, and `yaml`.
+`BunServices.layer` supplies filesystem, path, and subprocess services at the CLI
+entry point, and `BunRuntime.runMain` manages the main fiber. Catalog transport
+uses Effect streams and a request queue. A small process finalizer preserves
+TERM-to-KILL escalation after a nonzero leader exit in Effect 4.0.0; custom teardown
+preserves distinct SIGINT/SIGTERM exit codes.
+
+The project deliberately avoids worktree libraries, databases, external services,
+or a second workflow format. `bun run repos:sync` checks the reference checkout
+against the locked versions of Effect, platform-bun, and effect-vitest.
 
 ## Codex references
 

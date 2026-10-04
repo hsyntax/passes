@@ -28,6 +28,14 @@ const repositories: ReadonlyArray<Repository> = [
         packageDirectory: "packages/effect",
         packageName: "effect",
       },
+      {
+        packageDirectory: "packages/platform/bun",
+        packageName: "@effect/platform-bun",
+      },
+      {
+        packageDirectory: "packages/vitest",
+        packageName: "@effect/vitest",
+      },
     ],
     repository: "https://github.com/Effect-TS/effect.git",
     tag: (version) => `effect@${version}`,
