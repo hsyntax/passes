@@ -1,0 +1,30 @@
+{
+  "name": "passes",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Run Markdown-defined Codex stages in concurrent layers in the current checkout",
+  "bin": {
+    "passes": "./src/cli.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "build": "bun build ./src/cli.ts --target=bun --outfile=dist/passes.js",
+    "check": "bun run typecheck && bun run lint && bun test && bun run build"
+  },
+  "dependencies": {
+    "effect": "4.0.0-rc.117",
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.8",
+    "@types/bun": "1.3.11",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "bun": ">=1.4.2"
+  }
+}
