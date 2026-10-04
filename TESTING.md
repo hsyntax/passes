@@ -20,7 +20,7 @@ bun dist/passes.js validate stages
 
 ## Automated checks
 
-- 73 tests passing, zero failures
+- 77 tests passing, zero failures
 - Strict TypeScript typecheck passing
 - Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
@@ -51,10 +51,17 @@ Tests import from `@effect/vitest`. Filesystem tests use `it.effect`, shared Bun
 filesystem/path layers, typed failure assertions, and scoped temporary directories.
 Three subprocess tests use `it.live` with `BunServices.layer` to verify complete
 output collection, bounded intact tails, nonzero exits, and missing executables.
-The fourth process test forces single-byte fragments through the exported line
+The line-reporting test forces single-byte fragments through the exported line
 reporter: real OS pipes may coalesce writes, so a CLI test cannot reliably force
 a split UTF-8 character. Buffer-capacity constants are not asserted. Pure parser tests and black-box
 CLI tests use ordinary Vitest tests; real subprocess timing is not simulated.
+
+An output-collector regression test verifies that reusing the same Effect starts
+with an empty buffer. Three runner tests inject failures at the subprocess service
+boundary to verify that unexpected stdin/stdout errors retain their cause and that
+an early broken stdin pipe still allows the process result to determine success.
+The collector reuse and unexpected I/O failure cases failed before the fixes and
+passed afterward.
 
 Run the suite with `bun run test`, or a targeted file with
 `bun run test test/process.test.ts`. The old `bun test` runner is no longer used.

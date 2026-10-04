@@ -29,34 +29,30 @@ const reporter = {
   },
 };
 
-function main(args: readonly string[]) {
-  return Effect.gen(function* () {
-    if (args.length === 1 && args[0] === "--help") {
-      yield* Effect.sync(() => reporter.out(HELP));
-      return;
-    }
-    if (args.length === 1 && args[0] === "--version") {
-      yield* Effect.sync(() => reporter.out("passes 0.1.0"));
-      return;
-    }
-    const [command, directory] = args;
-    if (
-      args.length !== 2 ||
-      (command !== "run" && command !== "validate") ||
-      !directory ||
-      directory.startsWith("--")
-    ) {
-      return yield* Effect.fail(
-        new PassesError(
-          `Expected passes validate <stages-directory> or passes run <stages-directory>. Use --help for details.`,
-        ),
-      );
-    }
-    const plan = yield* loadPlan(directory, process.cwd());
-    yield* Effect.sync(() => reporter.out(renderGraph(plan)));
-    if (command === "run") yield* runPlan(plan, reporter);
-  });
-}
+const main = Effect.fnUntraced(function* (args: readonly string[]) {
+  if (args.length === 1 && args[0] === "--help") {
+    yield* Effect.sync(() => reporter.out(HELP));
+    return;
+  }
+  if (args.length === 1 && args[0] === "--version") {
+    yield* Effect.sync(() => reporter.out("passes 0.1.0"));
+    return;
+  }
+  const [command, directory] = args;
+  if (
+    args.length !== 2 ||
+    (command !== "run" && command !== "validate") ||
+    !directory ||
+    directory.startsWith("--")
+  ) {
+    return yield* new PassesError({
+      message: `Expected passes validate <stages-directory> or passes run <stages-directory>. Use --help for details.`,
+    });
+  }
+  const plan = yield* loadPlan(directory, process.cwd());
+  yield* Effect.sync(() => reporter.out(renderGraph(plan)));
+  if (command === "run") yield* runPlan(plan, reporter);
+});
 
 let interrupted: NodeJS.Signals | undefined;
 const recordSignal = (signal: NodeJS.Signals) => {

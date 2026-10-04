@@ -1,8 +1,20 @@
 import { BunServices } from "@effect/platform-bun";
 import { expect, it, test } from "@effect/vitest";
-import { Effect, FileSystem, Path } from "effect";
+import { Effect, FileSystem, Path, Stream } from "effect";
 import { PassesError } from "../src/errors.ts";
-import { collectProcess, lineReporter } from "../src/process.ts";
+import { captureTextTail, collectProcess, lineReporter } from "../src/process.ts";
+
+it.effect("reusing an output collector starts with an empty buffer", () =>
+  Effect.gen(function* () {
+    const outputs: string[] = [];
+    const collect = captureTextTail(Stream.make(new TextEncoder().encode("hello")), 100, (text) =>
+      outputs.push(text),
+    );
+    yield* collect;
+    yield* collect;
+    expect(outputs).toEqual(["hello", "hello"]);
+  }),
+);
 
 it.live("collects complete stdout and stderr without mixing or altering text", () =>
   Effect.gen(function* () {

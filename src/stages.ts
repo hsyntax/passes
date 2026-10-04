@@ -42,19 +42,25 @@ export function parseStage(source: string, file: string): Stage {
   const match = /^\uFEFF?---[\t ]*\r?\n([\s\S]*?)^---[\t ]*\r?$(?:\n|$)([\s\S]*)/m.exec(source);
   // The multiline regexp allows the closing fence to anchor; enforce opening at byte zero.
   if (!match || match.index !== 0) {
-    throw new PassesError(`${file}: frontmatter must start and end with a line containing ---`);
+    throw new PassesError({
+      message: `${file}: frontmatter must start and end with a line containing ---`,
+    });
   }
   const yaml = parseDocument(match[1] ?? "", { uniqueKeys: true, strict: true, schema: "core" });
   if (yaml.errors.length || yaml.warnings.length) {
-    throw new PassesError(
-      `${file}: YAML: ${[...yaml.errors, ...yaml.warnings].map((e) => e.message).join("; ")}`,
-    );
+    throw new PassesError({
+      message: `${file}: YAML: ${[...yaml.errors, ...yaml.warnings].map((e) => e.message).join("; ")}`,
+      cause: new AggregateError([...yaml.errors, ...yaml.warnings]),
+    });
   }
   let raw: unknown;
   try {
     raw = yaml.toJS({ maxAliasCount: 0 });
   } catch (error) {
-    throw new PassesError(`${file}: YAML: ${message(error)} (aliases are not supported)`);
+    throw new PassesError({
+      message: `${file}: YAML: ${message(error)} (aliases are not supported)`,
+      cause: error,
+    });
   }
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     raw = Object.fromEntries(
@@ -70,27 +76,28 @@ export function parseStage(source: string, file: string): Stage {
       raw,
     );
   } catch (error) {
-    throw new PassesError(`${file}: frontmatter: ${message(error)}`);
+    throw new PassesError({ message: `${file}: frontmatter: ${message(error)}`, cause: error });
   }
   if (!Number.isSafeInteger(metadata.step)) {
-    throw new PassesError(`${file}: step must be a nonnegative safe integer`);
+    throw new PassesError({ message: `${file}: step must be a nonnegative safe integer` });
   }
   const prompt = match[2] ?? "";
-  if (!prompt.trim()) throw new PassesError(`${file}: prompt body must not be empty`);
+  if (!prompt.trim()) throw new PassesError({ message: `${file}: prompt body must not be empty` });
   if (prompt.includes("\0"))
-    throw new PassesError(`${file}: prompt body must not contain NUL bytes`);
+    throw new PassesError({ message: `${file}: prompt body must not contain NUL bytes` });
   const slug = slugify(metadata.name);
-  if (!slug) throw new PassesError(`${file}: name must contain at least one letter or number`);
+  if (!slug)
+    throw new PassesError({ message: `${file}: name must contain at least one letter or number` });
   return { ...metadata, slug, prompt, file };
 }
 
-export const loadPlan = (directory: string, cwd: string) =>
-  Effect.gen(function* () {
+export const loadPlan = Effect.fnUntraced(
+  function* (directory: string, cwd: string) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const absolute = path.resolve(cwd, directory);
     if ((yield* fs.stat(absolute)).type !== "Directory")
-      return yield* Effect.fail(new PassesError(`${absolute}: expected a stages directory`));
+      return yield* new PassesError({ message: `${absolute}: expected a stages directory` });
     const paths: string[] = [];
     const walk = Effect.fnUntraced(function* (
       dir: string,
@@ -115,9 +122,9 @@ export const loadPlan = (directory: string, cwd: string) =>
     });
     yield* walk(absolute);
     if (!paths.length)
-      return yield* Effect.fail(new PassesError(`${directory}: no Markdown (.md) stages found`));
+      return yield* new PassesError({ message: `${directory}: no Markdown (.md) stages found` });
     const stages: Stage[] = [];
-    const errors: string[] = [];
+    const errors: (PassesError | PlatformError.PlatformError)[] = [];
     const names = new Map<string, string>();
     const slugs = new Map<string, string>();
     for (const filename of paths) {
@@ -126,35 +133,37 @@ export const loadPlan = (directory: string, cwd: string) =>
         const source = yield* fs.readFileString(filename);
         const stage = yield* Effect.try({
           try: () => parseStage(source, file),
-          catch: (error) => new PassesError(message(error)),
+          catch: (error) =>
+            error instanceof PassesError
+              ? error
+              : new PassesError({ message: message(error), cause: error }),
         });
         const duplicate = names.get(stage.name);
         const collision = slugs.get(stage.slug);
         if (duplicate)
-          return yield* Effect.fail(
-            new PassesError(`${file}: name "${stage.name}" duplicates ${duplicate}`),
-          );
+          return yield* new PassesError({
+            message: `${file}: name "${stage.name}" duplicates ${duplicate}`,
+          });
         if (collision)
-          return yield* Effect.fail(
-            new PassesError(
-              `${file}: name "${stage.name}" has slug "${stage.slug}", which collides with ${collision}`,
-            ),
-          );
+          return yield* new PassesError({
+            message: `${file}: name "${stage.name}" has slug "${stage.slug}", which collides with ${collision}`,
+          });
         names.set(stage.name, file);
         slugs.set(stage.slug, file);
         stages.push(stage);
       }).pipe(
         Effect.catch((error) =>
           Effect.sync(() => {
-            errors.push(message(error));
+            errors.push(error);
           }),
         ),
       );
     }
     if (errors.length)
-      return yield* Effect.fail(
-        new PassesError(`Invalid stage configuration:\n${errors.map((e) => `  ${e}`).join("\n")}`),
-      );
+      return yield* new PassesError({
+        message: `Invalid stage configuration:\n${errors.map((e) => `  ${message(e)}`).join("\n")}`,
+        cause: new AggregateError(errors),
+      });
     const steps = [...new Set(stages.map((s) => s.step))].sort((a, b) => a - b);
     return {
       cwd,
@@ -162,13 +171,13 @@ export const loadPlan = (directory: string, cwd: string) =>
       stages,
       layers: steps.map((step) => ({ step, stages: stages.filter((s) => s.step === step) })),
     } satisfies Plan;
-  }).pipe(
-    Effect.mapError((error) =>
-      error instanceof PassesError
-        ? error
-        : new PassesError(`Could not read stages: ${message(error)}`),
-    ),
-  );
+  },
+  Effect.mapError((error) =>
+    error instanceof PassesError
+      ? error
+      : new PassesError({ message: `Could not read stages: ${message(error)}`, cause: error }),
+  ),
+);
 
 export function renderGraph(plan: Plan): string {
   const lines = [

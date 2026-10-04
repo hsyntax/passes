@@ -1,8 +1,9 @@
-import { PlatformError } from "effect";
+import { Data, PlatformError } from "effect";
 
-export class PassesError extends Error {
-  override readonly name = "PassesError";
-}
+export class PassesError extends Data.TaggedError("PassesError")<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
 
 export function message(error: unknown): string {
   // PlatformError.message omits the native cause (including a child's exit signal).

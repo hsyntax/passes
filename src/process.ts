@@ -5,8 +5,8 @@ import { message, PassesError } from "./errors.ts";
 
 const termination = { killSignal: "SIGTERM", forceKillAfter: "500 millis" } as const;
 
-export function startProcess(command: string, args: readonly string[], cwd: string) {
-  return Effect.gen(function* () {
+export const startProcess = Effect.fnUntraced(
+  function* (command: string, args: readonly string[], cwd: string) {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const proc = yield* spawner.spawn(
       ChildProcess.make(command, args, {
@@ -16,47 +16,55 @@ export function startProcess(command: string, args: readonly string[], cwd: stri
         ...termination,
       }),
     );
-    // Effect 4.0.0's release path only sends TERM if the leader exited nonzero.
-    // Explicit kill also waits for and escalates surviving process-group members.
+    // Explicit kill waits for and escalates surviving process-group members even
+    // after a nonzero leader exit, and lets callers stop before draining output.
     const stop = yield* Effect.cached(Effect.ignore(proc.kill(termination)));
     yield* Effect.addFinalizer(() => stop);
     return { ...proc, stop };
-  }).pipe(
-    Effect.mapError((error) => new PassesError(`Could not start ${command}: ${message(error)}`)),
-  );
-}
+  },
+  (effect, command) =>
+    effect.pipe(
+      Effect.mapError(
+        (cause) =>
+          new PassesError({ message: `Could not start ${command}: ${message(cause)}`, cause }),
+      ),
+    ),
+);
 
-export function collectProcess(command: string, args: readonly string[], cwd: string) {
-  return Effect.scoped(
-    Effect.gen(function* () {
-      const proc = yield* startProcess(command, args, cwd);
-      let stdout = "";
-      let stderr = "";
-      const out = yield* captureTextTail(proc.stdout, 64_000, (text) => (stdout = text)).pipe(
-        Effect.forkScoped,
-      );
-      const err = yield* captureTextTail(proc.stderr, 8_000, (text) => (stderr = text)).pipe(
-        Effect.forkScoped,
-      );
-      yield* Stream.run(Stream.empty, proc.stdin);
-      const code = yield* proc.exitCode;
-      yield* Effect.all([Fiber.join(out), Fiber.join(err)], { concurrency: "unbounded" });
-      return { code, stdout, stderr };
-    }),
-  ).pipe(
-    Effect.timeout(10_000),
-    Effect.mapError((error) => new PassesError(`${command}: ${message(error)}`)),
-  );
-}
+export const collectProcess = Effect.fnUntraced(
+  function* (command: string, args: readonly string[], cwd: string) {
+    const proc = yield* startProcess(command, args, cwd);
+    let stdout = "";
+    let stderr = "";
+    const out = yield* captureTextTail(proc.stdout, 64_000, (text) => (stdout = text)).pipe(
+      Effect.forkScoped,
+    );
+    const err = yield* captureTextTail(proc.stderr, 8_000, (text) => (stderr = text)).pipe(
+      Effect.forkScoped,
+    );
+    yield* Stream.run(Stream.empty, proc.stdin);
+    const code = yield* proc.exitCode;
+    yield* Effect.all([Fiber.join(out), Fiber.join(err)], { concurrency: "unbounded" });
+    return { code, stdout, stderr };
+  },
+  Effect.scoped,
+  (effect, command) =>
+    effect.pipe(
+      Effect.timeout(10_000),
+      Effect.mapError(
+        (cause) => new PassesError({ message: `${command}: ${message(cause)}`, cause }),
+      ),
+    ),
+);
 
 /** Drain a byte stream while retaining only its most recent decoded text. */
-export function captureTextTail<E, R>(
+export const captureTextTail = Effect.fnUntraced(function* <E, R>(
   stream: Stream.Stream<Uint8Array, E, R>,
   limit: number,
   update: (text: string) => void,
 ) {
   let text = "";
-  return stream.pipe(
+  yield* stream.pipe(
     Stream.decodeText(),
     Stream.runForEach((chunk) =>
       Effect.sync(() => {
@@ -65,7 +73,7 @@ export function captureTextTail<E, R>(
       }),
     ),
   );
-}
+});
 
 /** Prefix streaming output without retaining unbounded transcripts or splitting UTF-8. */
 export function lineReporter(write: (line: string) => void) {
