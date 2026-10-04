@@ -1,0 +1,10 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 100,
+  "tabWidth": 2,
+  "useTabs": false,
+  "singleQuote": false,
+  "semi": true,
+  "sortPackageJson": false,
+  "ignorePatterns": ["node_modules/**", "dist/**", "coverage/**", "repos/**", "bun.lock"]
+}

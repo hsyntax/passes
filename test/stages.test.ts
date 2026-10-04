@@ -21,7 +21,7 @@ async function root() {
 
 describe("frontmatter", () => {
   test("trims metadata, preserves the exact Markdown body, and derives a stable slug", () => {
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: stage bodies are deliberately literal
+    // Stage bodies are deliberately literal.
     const body = "\n# Prompt\n${not_a_variable}\n---\nLiteral shell text: $(touch nope)\n";
     const stage = parseStage(
       document(header.replace("Example", '"  Héllo, World!  "'), body),

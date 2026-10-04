@@ -5,7 +5,7 @@ model: gpt-6.1-sol
 reasoning_effort: high
 ---
 
-Study all tests and validate that they follow these principles : 
+Study all tests and validate that they follow these principles :
 
 - Test behavior through public interfaces.
 - Use expected results independent of the implementation.

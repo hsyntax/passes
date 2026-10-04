@@ -60,6 +60,7 @@ step: 0
 model: gpt-6-luna
 reasoning_effort: medium
 ---
+
 Review src/example/errors.ts. Simplify redundant Effect composition while
 preserving behavior. Only edit that file. Leave uncertain cases unchanged.
 ```
@@ -161,11 +162,14 @@ stage or automatic rollback is imposed.
 ## Development
 
 ```sh
-bun test          # parser/discovery/unit + stubbed CLI integration tests
-bun run typecheck # TypeScript strict mode
-bun run lint      # Biome check
-bun run build     # bundled Bun entry point
-bun run check     # all of the above
+bun test             # parser/discovery/unit + stubbed CLI integration tests
+bun run typecheck    # TypeScript strict mode
+bun run lint         # Oxlint checks
+bun run lint:fix     # apply Oxlint fixes
+bun run format       # format with Oxfmt
+bun run format:check # check Oxfmt formatting
+bun run build        # bundled Bun entry point
+bun run check        # typecheck, lint, formatting check, tests, and build
 ```
 
 All tests use temporary Git repositories and a fake Codex executable placed first

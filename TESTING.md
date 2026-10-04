@@ -20,7 +20,7 @@ bun dist/passes.js validate examples/stages
 
 - 65 tests passing, 205 assertions, zero failures
 - Strict TypeScript typecheck passing
-- Biome formatting/lint passing
+- Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
 - Example stage validation passing through the source and bundled CLI
 
