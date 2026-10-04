@@ -13,7 +13,8 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "build": "bun build ./src/cli.ts --target=bun --outfile=dist/passes.js",
-    "check": "bun run typecheck && bun run lint && bun test && bun run build"
+    "check": "bun run typecheck && bun run lint && bun test && bun run build",
+    "repos:sync": "tsx scripts/sync-repos.ts"
   },
   "dependencies": {
     "effect": "4.0.0-rc.117",
