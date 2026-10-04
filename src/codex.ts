@@ -1,6 +1,6 @@
 import { Effect, Queue, Schema, Stream } from "effect";
 import { message, PassesError } from "./errors.ts";
-import { collectProcess, startProcess } from "./process.ts";
+import { captureTextTail, collectProcess, startProcess } from "./process.ts";
 import type { Plan, Stage } from "./stages.ts";
 
 const CatalogEntry = Schema.Struct({
@@ -139,13 +139,7 @@ export function readCatalog(cwd: string) {
           Stream.run(proc.stdin),
           Effect.andThen(Effect.never),
         ),
-        proc.stderr.pipe(
-          Stream.decodeText(),
-          Stream.runForEach((chunk) =>
-            Effect.sync(() => {
-              stderr = (stderr + chunk).slice(-8_000);
-            }),
-          ),
+        captureTextTail(proc.stderr, 8_000, (text) => (stderr = text)).pipe(
           Effect.andThen(Effect.never),
         ),
         proc.exitCode.pipe(

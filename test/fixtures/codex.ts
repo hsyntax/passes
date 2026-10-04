@@ -9,7 +9,7 @@ interface Directive {
   id: string;
   barrier?: string[];
   waitForDescendantOf?: string[];
-  delayMs?: number;
+  waitForFile?: string;
   exitCode?: number;
   exitSignal?: NodeJS.Signals;
   descendantOutput?: boolean;
@@ -31,7 +31,7 @@ interface Event {
 }
 
 function log(event: Event): void {
-  appendFileSync(eventPath as string, `${JSON.stringify({ time: Date.now(), ...event })}\n`);
+  appendFileSync(eventPath as string, `${JSON.stringify(event)}\n`);
 }
 
 function events(): Event[] {
@@ -111,10 +111,9 @@ if (args[0] === "--version") {
           hidden: false,
           isDefault: index === 0,
           defaultReasoningEffort: "medium",
-          supportedReasoningEfforts: [
-            { reasoningEffort: "medium", description: "" },
-            { reasoningEffort: "high", description: "" },
-          ],
+          supportedReasoningEfforts: (
+            JSON.parse(process.env.PASSES_TEST_EFFORTS ?? '["medium", "high"]') as string[]
+          ).map((reasoningEffort) => ({ reasoningEffort, description: "" })),
           inputModalities: ["text"],
           supportsPersonality: false,
         })),
@@ -184,12 +183,14 @@ if (args[0] === "--version") {
   if (directive.stdout) process.stdout.write(directive.stdout);
   if (directive.stderr) process.stderr.write(directive.stderr);
   log({ kind: "output-written", id: directive.id, pid: process.pid });
+  if (directive.waitForFile) {
+    await waitFor(() => existsSync(resolve(process.cwd(), directive.waitForFile as string)));
+  }
   if (directive.hold) {
     setInterval(() => {
       if (directive.tickOutput) process.stdout.write("still running\n");
     }, 25);
   } else {
-    await Bun.sleep(directive.delayMs ?? 0);
     log({ kind: "finish", id: directive.id, pid: process.pid, exitCode: directive.exitCode ?? 0 });
     if (directive.exitSignal) process.kill(process.pid, directive.exitSignal);
     else process.exit(directive.exitCode ?? 0);

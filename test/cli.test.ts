@@ -31,7 +31,6 @@ interface Event {
   prompt?: string;
   method?: string;
   cursor?: string;
-  time: number;
 }
 
 interface Workspace {
@@ -56,6 +55,10 @@ function shellQuote(value: string): string {
 }
 
 function workspace({ git = true, nested = false } = {}): Workspace {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("PASSES_TEST_") || key.startsWith("GIT_")) delete env[key];
+  }
   // macOS exposes /var through /private/var in subprocess cwd values.
   const root = realpathSync(mkdtempSync(join(tmpdir(), "passes-cli-test-")));
   const repo = join(root, "repo");
@@ -65,7 +68,7 @@ function workspace({ git = true, nested = false } = {}): Workspace {
   mkdirSync(stages, { recursive: true });
   mkdirSync(bin);
   if (git) {
-    const result = spawnSync("git", ["init", "--quiet", repo]);
+    const result = spawnSync("git", ["init", "--quiet", repo], { env });
     if (result.status !== 0) throw new Error(result.stderr.toString());
   }
   const executable = join(bin, "codex");
@@ -79,7 +82,7 @@ function workspace({ git = true, nested = false } = {}): Workspace {
     stages,
     eventPath,
     env: {
-      ...process.env,
+      ...env,
       PATH: `${bin}:${process.env.PATH ?? ""}`,
       PASSES_TEST_EVENTS: eventPath,
       NO_COLOR: "1",
@@ -206,6 +209,8 @@ describe("passes CLI acceptance", () => {
       expect(result.output).toContain("First pass");
       expect(result.output).toContain("Peer pass");
       expect(result.output).toContain("Final review");
+      expect(result.output).toMatch(/step\s+0/i);
+      expect(result.output).toMatch(/step\s+8/i);
       expect(result.output.search(/step\s+0/i)).toBeLessThan(result.output.search(/step\s+8/i));
       expect(result.output).toMatch(/concurrent|parallel/i);
       expect(result.output).toMatch(/shared|isolat/i);
@@ -222,7 +227,7 @@ describe("passes CLI acceptance", () => {
       stage(ws, "valid.md");
       writeFileSync(join(ws.stages, "invalid.md"), "---\nname: Broken\nstep: [\n---\nPrompt\n");
       const result = await launch(ws).result;
-      expect(result.code).not.toBe(0);
+      expect(result.code).toBe(1);
       expect(result.output).toContain("invalid.md");
       expect(events(ws)).toEqual([]);
     },
@@ -236,7 +241,7 @@ describe("passes CLI acceptance", () => {
       stage(ws, "one.md", { name: "Repeated", step: 0 });
       stage(ws, "two.md", { name: " Repeated ", step: 9 });
       const result = await launch(ws).result;
-      expect(result.code).not.toBe(0);
+      expect(result.code).toBe(1);
       expect(result.output).toMatch(/duplicate/i);
       expect(events(ws)).toEqual([]);
     },
@@ -249,7 +254,7 @@ describe("passes CLI acceptance", () => {
       const ws = workspace({ git: false });
       stage(ws, "stage.md");
       const result = await launch(ws).result;
-      expect(result.code).not.toBe(0);
+      expect(result.code).toBe(1);
       expect(result.output).toMatch(/git|repository/i);
       expect(events(ws)).toEqual([]);
     },
@@ -257,8 +262,8 @@ describe("passes CLI acceptance", () => {
   );
 
   test.each([
-    { model: "not-in-catalog", effort: "medium", message: /model|not-in-catalog/i },
-    { model: "mock-model", effort: "ultra", message: /effort|ultra/i },
+    { model: "not-in-catalog", effort: "medium", message: /model "not-in-catalog".*not in/i },
+    { model: "mock-model", effort: "ultra", message: /reasoning_effort "ultra".*unsupported/i },
   ])(
     "unsupported model/effort fails before any exec: %j",
     async ({ model, effort, message }) => {
@@ -266,8 +271,9 @@ describe("passes CLI acceptance", () => {
       stage(ws, "supported-first.md", { step: 0 });
       stage(ws, "unsupported.md", { model, effort, step: 5 });
       const result = await launch(ws).result;
-      expect(result.code).not.toBe(0);
+      expect(result.code).toBe(1);
       expect(result.output).toMatch(message);
+      expect(result.output).toContain("unsupported.md");
       expect(events(ws).some((event) => event.kind === "app-server")).toBe(true);
       expect(events(ws).filter((event) => event.kind === "start")).toEqual([]);
       await expectFixtureStopped(ws);
@@ -282,7 +288,7 @@ describe("passes CLI acceptance", () => {
       ws.env.PASSES_TEST_CODEX_VERSION = "0.159.1";
       stage(ws, "stage.md");
       const result = await launch(ws).result;
-      expect(result.code).not.toBe(0);
+      expect(result.code).toBe(1);
       expect(result.output).toMatch(/old|version|0\.159\.2/i);
       expect(events(ws).map((event) => event.kind)).toEqual(["version"]);
       await expectFixtureStopped(ws);
@@ -297,7 +303,7 @@ describe("passes CLI acceptance", () => {
       ws.env.PASSES_TEST_CATALOG_MODE = "invalid";
       stage(ws, "stage.md");
       const result = await launch(ws).result;
-      expect(result.code).not.toBe(0);
+      expect(result.code).toBe(1);
       expect(result.output).toMatch(/catalog|compatibility|JSON/i);
       expect(events(ws).some((event) => event.kind === "start")).toBe(false);
       await expectFixtureStopped(ws);
@@ -367,7 +373,7 @@ describe("passes CLI acceptance", () => {
       ws.env.PASSES_TEST_CATALOG_MODE = "repeated";
       stage(ws, "stage.md");
       const result = await launch(ws).result;
-      expect(result.code).not.toBe(0);
+      expect(result.code).toBe(1);
       expect(result.output).toMatch(/cursor|pagination/i);
       expect(
         events(ws).filter((event) => event.kind === "rpc" && event.method === "model/list"),
@@ -384,14 +390,37 @@ describe("passes CLI acceptance", () => {
       const ws = workspace();
       stage(ws, "alpha.md", {
         name: "Alpha stage",
-        prompt: directive("alpha", { barrier: ["alpha", "beta"], delayMs: 150 }),
+        prompt: directive("alpha", { barrier: ["alpha", "beta"], waitForFile: "release-alpha" }),
       });
       stage(ws, "beta.md", {
         name: "Beta stage",
-        prompt: directive("beta", { barrier: ["alpha", "beta"], delayMs: 25 }),
+        prompt: directive("beta", { barrier: ["alpha", "beta"], waitForFile: "release-beta" }),
       });
       stage(ws, "review.md", { name: "Review stage", step: 7, prompt: directive("review") });
-      const result = await launch(ws).result;
+      const run = launch(ws);
+      await waitFor(
+        () =>
+          ["alpha", "beta"].every((id) =>
+            events(ws).some((event) => event.kind === "output-written" && event.id === id),
+          ),
+        "both same-step stages to reach their release gates",
+      );
+      expect(events(ws).some((event) => event.kind === "start" && event.id === "review")).toBe(
+        false,
+      );
+      writeFileSync(join(ws.cwd, "release-alpha"), "ready");
+      await waitFor(
+        () => events(ws).some((event) => event.kind === "finish" && event.id === "alpha"),
+        "alpha to finish while beta is held",
+      );
+      expect(events(ws).some((event) => event.kind === "finish" && event.id === "beta")).toBe(
+        false,
+      );
+      expect(events(ws).some((event) => event.kind === "start" && event.id === "review")).toBe(
+        false,
+      );
+      writeFileSync(join(ws.cwd, "release-beta"), "ready");
+      const result = await run.result;
       expect(result.code).toBe(0);
       const log = events(ws);
       const position = (kind: string, id: string) =>
@@ -399,16 +428,12 @@ describe("passes CLI acceptance", () => {
       for (const id of ["alpha", "beta"]) {
         expect(position("start", id)).toBeGreaterThan(-1);
         expect(position("barrier", id)).toBeGreaterThan(position("start", id));
+        expect(position("finish", id)).toBeGreaterThan(-1);
         expect(position("start", "review")).toBeGreaterThan(position("finish", id));
       }
       expect(Math.max(position("start", "alpha"), position("start", "beta"))).toBeLessThan(
         Math.min(position("finish", "alpha"), position("finish", "beta")),
       );
-      expect(log.filter((event) => event.kind === "rpc").map((event) => event.method)).toEqual([
-        "initialize",
-        "initialized",
-        "model/list",
-      ]);
       await expectFixtureStopped(ws);
     },
     timeout,
@@ -420,24 +445,25 @@ describe("passes CLI acceptance", () => {
       const ws = workspace({ nested: true });
       const marker = join(ws.cwd, "injected-marker");
       const model = `mock-model; touch ${marker}; $(touch ${marker})`;
+      const effort = 'high"; x = true #';
       ws.env.PASSES_TEST_MODELS = JSON.stringify([model]);
+      ws.env.PASSES_TEST_EFFORTS = JSON.stringify([effort]);
       const prompt = directive("argv", {
         stdout: "stdout sentinel\npartial stdout",
         stderr: "stderr sentinel\npartial stderr",
         appendFile: { path: "dirty.txt", content: "agent edit\n" },
       });
-      stage(ws, "stage.md", { name: "Output stage", model, effort: "high", prompt });
+      stage(ws, "stage.md", { name: "Output stage", model, effort, prompt });
       writeFileSync(join(ws.cwd, "dirty.txt"), "pre-existing work\n");
       const result = await launch(ws).result;
       expect(result.code).toBe(0);
       const start = events(ws).find((event) => event.kind === "start");
       expect(start?.cwd).toBe(ws.cwd);
       expect(start?.prompt).toBe(prompt);
-      expect(start?.args).toContain(model);
       const args = start?.args ?? [];
       const valueAfter = (flag: string) => args[args.indexOf(flag) + 1];
       expect(valueAfter("--model")).toBe(model);
-      expect(valueAfter("-c")).toBe('model_reasoning_effort="high"');
+      expect(valueAfter("-c")).toBe('model_reasoning_effort="high\\"; x = true #"');
       expect(valueAfter("--sandbox")).toBe("workspace-write");
       expect(valueAfter("--ask-for-approval")).toBe("never");
       expect(valueAfter("--cd")).toBe(ws.cwd);
@@ -448,17 +474,42 @@ describe("passes CLI acceptance", () => {
       expect(readFileSync(join(ws.cwd, "dirty.txt"), "utf8")).toBe(
         "pre-existing work\nagent edit\n",
       );
-      expect(existsSync(join(ws.repo, ".git", "worktrees"))).toBe(false);
-      for (const token of [
-        "stdout sentinel",
-        "partial stdout",
-        "stderr sentinel",
-        "partial stderr",
-      ]) {
-        const line = result.output.split("\n").find((line) => line.includes(token));
+      for (const [token, channel, other] of [
+        ["stdout sentinel", result.stdout, result.stderr],
+        ["partial stdout", result.stdout, result.stderr],
+        ["stderr sentinel", result.stderr, result.stdout],
+        ["partial stderr", result.stderr, result.stdout],
+      ] as const) {
+        const line = channel.split("\n").find((line) => line.includes(token));
         expect(line).toBeDefined();
         expect(line).toContain("Output stage");
+        expect(other).not.toContain(token);
       }
+      await expectFixtureStopped(ws);
+    },
+    timeout,
+  );
+
+  test(
+    "streams Unicode and long lines with labels while preserving every character",
+    async () => {
+      const ws = workspace();
+      const longLine = "0123456789".repeat(2_000) + "final é 🌍";
+      stage(ws, "output.md", {
+        name: "Streaming stage",
+        prompt: directive("output", { stdout: `héllo 🌍\r\n${longLine}` }),
+      });
+      const result = await launch(ws).result;
+      expect(result.code).toBe(0);
+      const prefix = "[Streaming stage] ";
+      const lines = result.stdout
+        .split("\n")
+        .filter((line) => line.startsWith(prefix))
+        .map((line) => line.slice(prefix.length));
+      expect(lines.shift()).toBe("héllo 🌍");
+      expect(lines.join("")).toBe(longLine);
+      expect(lines.length).toBeGreaterThan(1);
+      expect(result.stderr).toBe("");
       await expectFixtureStopped(ws);
     },
     timeout,
@@ -484,8 +535,9 @@ describe("passes CLI acceptance", () => {
       });
       stage(ws, "later.md", { step: 1, prompt: directive("later") });
       const result = await launch(ws).result;
-      expect(result.code).not.toBe(0);
+      expect(result.code).toBe(1);
       expect(result.output).toContain("Failing stage");
+      expect(result.output).toContain("exit code 17");
       expect(events(ws).some((event) => event.kind === "start" && event.id === "later")).toBe(
         false,
       );
@@ -522,6 +574,9 @@ describe("passes CLI acceptance", () => {
       });
       const result = await launch(ws).result;
       expect(result.code).toBe(expectedCode);
+      expect(events(ws).some((event) => event.kind === "descendant" && event.id === "orphan")).toBe(
+        true,
+      );
       expect(result.output).toContain("partial output");
       if (options.exitSignal) expect(result.output).toContain(options.exitSignal);
       if (options.descendantOutput) expect(result.output).toContain("kept its output pipe open");
@@ -593,9 +648,15 @@ describe("passes CLI acceptance", () => {
       child.kill(signal);
       const completed = await result;
       expect(completed.code).toBe(signal === "SIGINT" ? 130 : 143);
-      expect(completed.output).toContain("partial stdout");
-      expect(completed.output).toContain("partial stderr");
-      expect(completed.output).toContain("cleanup output");
+      for (const [token, channel] of [
+        ["partial stdout", completed.stdout],
+        ["cleanup output", completed.stdout],
+        ["partial stderr", completed.stderr],
+      ] as const) {
+        const line = channel.split("\n").find((line) => line.includes(token));
+        expect(line).toBeDefined();
+        expect(line).toContain("Waiting stage");
+      }
       expect(events(ws).some((event) => event.kind === "start" && event.id === "later")).toBe(
         false,
       );
@@ -605,7 +666,8 @@ describe("passes CLI acceptance", () => {
   );
 
   test.each([
-    { args: ["run", "--repo", "other"] },
+    { args: ["unknown-command", "stages"] },
+    { args: ["run", "--unknown-option"] },
     { args: ["run", "stages", "extra"] },
     { args: ["validate"] },
   ])(
@@ -614,19 +676,30 @@ describe("passes CLI acceptance", () => {
       const ws = workspace();
       stage(ws, "stage.md");
       const result = await launch(ws, args).result;
-      expect(result.code).not.toBe(0);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toMatch(
+        /passes validate <stages-directory>.*passes run <stages-directory>/,
+      );
       expect(events(ws)).toEqual([]);
     },
     timeout,
   );
 
-  test.each(["--help", "--version"])(
-    "%s works without a repository or Codex",
-    async (flag) => {
+  test.each([
+    {
+      flag: "--help",
+      expected:
+        /Usage:[\s\S]*passes validate <stages-directory>[\s\S]*passes run <stages-directory>/,
+    },
+    { flag: "--version", expected: /^passes \d+\.\d+\.\d+\n$/ },
+  ])(
+    "$flag works without a repository or Codex",
+    async ({ flag, expected }) => {
       const ws = workspace({ git: false });
       const result = await launch(ws, [flag]).result;
       expect(result.code).toBe(0);
-      expect(result.output.trim().length).toBeGreaterThan(0);
+      expect(result.stdout).toMatch(expected);
+      expect(result.stderr).toBe("");
       expect(events(ws)).toEqual([]);
     },
     timeout,

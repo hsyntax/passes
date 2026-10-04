@@ -1,9 +1,7 @@
 import { describe, expect, it, test } from "@effect/vitest";
 import { BunFileSystem, BunPath } from "@effect/platform-bun";
 import { Effect, FileSystem, Layer, Path } from "effect";
-import { execArgs } from "../src/codex.ts";
-import { lineReporter } from "../src/process.ts";
-import { loadPlan, parseStage, renderGraph, slugify } from "../src/stages.ts";
+import { loadPlan, parseStage, renderGraph } from "../src/stages.ts";
 
 const header = "name: Example\nstep: 0\nmodel: mock-model\nreasoning_effort: medium";
 const document = (yaml = header, body = "Do the work.\n") => `---\n${yaml}\n---\n${body}`;
@@ -18,7 +16,9 @@ describe("frontmatter", () => {
     expect(stage.name).toBe("Héllo, World!");
     expect(stage.slug).toBe("hello-world");
     expect(stage.prompt).toBe(body);
-    expect(slugify("日本語 名前")).toBe("日本語-名前");
+    expect(parseStage(document(header.replace("Example", "日本語 名前")), "ja.md").slug).toBe(
+      "日本語-名前",
+    );
   });
   test("accepts BOM, CRLF, quoted scalars, comments and valid YAML block text", () => {
     const text =
@@ -46,9 +46,7 @@ describe("frontmatter", () => {
     ["numeric model", header.replace("mock-model", "123"), "model"],
     ["empty effort", header.replace("medium", '" "'), "reasoning_effort"],
     ["boolean effort", header.replace("medium", "true"), "reasoning_effort"],
-    ["unknown id", `${header}\nid: x`, "id"],
-    ["unknown outputs", `${header}\noutputs: []`, "outputs"],
-    ["unknown parallel", `${header}\nparallel: true`, "parallel"],
+    ["unknown field", `${header}\nunrecognized: true`, "unrecognized"],
     ["duplicate YAML key", `${header}\nstep: 2`, "YAML"],
     ["malformed YAML", `${header}\nextra: [`, "YAML"],
     ["top-level array", "- name: A\n- step: 0", "frontmatter"],
@@ -64,27 +62,27 @@ describe("frontmatter", () => {
   ];
   for (const [label, yaml, field] of bad) {
     test(`rejects ${label} with file and field context`, () => {
-      try {
-        parseStage(document(yaml), "bad.md");
-        throw new Error("unexpected success");
-      } catch (error) {
-        expect(String(error)).toContain("bad.md");
-        expect(String(error)).toContain(field);
-      }
+      const parse = () => parseStage(document(yaml), "bad.md");
+      expect(parse).toThrow("bad.md");
+      expect(parse).toThrow(field);
     });
   }
-  for (const source of [
-    "No frontmatter",
-    `\n${document()}`,
-    document().replace(/---\n/, ""),
-    "---\nname: missing close",
-    document(header, " \r\n\t"),
-    document(header, "prompt\0"),
-  ]) {
-    test("rejects missing fences or invalid prompt", () => {
-      expect(() => parseStage(source, "bad.md")).toThrow("bad.md");
-    });
-  }
+  test.each([
+    { label: "absent frontmatter", source: "No frontmatter", context: "frontmatter" },
+    { label: "leading text", source: `\n${document()}`, context: "frontmatter" },
+    {
+      label: "missing opening fence",
+      source: document().replace(/---\n/, ""),
+      context: "frontmatter",
+    },
+    { label: "missing closing fence", source: "---\nname: missing close", context: "frontmatter" },
+    { label: "empty prompt", source: document(header, " \r\n\t"), context: "prompt" },
+    { label: "NUL in prompt", source: document(header, "prompt\0"), context: "NUL" },
+  ])("rejects $label with file and problem context", ({ source, context }) => {
+    const parse = () => parseStage(source, "bad.md");
+    expect(parse).toThrow("bad.md");
+    expect(parse).toThrow(context);
+  });
 });
 
 it.layer(Layer.mergeAll(BunFileSystem.layer, BunPath.layer))("discovery and graph", (it) => {
@@ -124,6 +122,8 @@ it.layer(Layer.mergeAll(BunFileSystem.layer, BunPath.layer))("discovery and grap
         expect(graph).toContain("Valid: 4 stages, 3 layers");
         expect(graph).toContain("wait for all stages");
         expect(graph).toContain("[concurrent, shared checkout]");
+        expect(graph).toContain("Step 3");
+        expect(graph).toContain("Step 20");
         expect(graph.indexOf("Step 3")).toBeLessThan(graph.indexOf("Step 20"));
       }),
   );
@@ -158,10 +158,12 @@ it.layer(Layer.mergeAll(BunFileSystem.layer, BunPath.layer))("discovery and grap
     Effect.gen(function* () {
       const { fs, cwd, join } = yield* workspace;
       yield* fs.writeFileString(join(cwd, "a.md"), document(header.replace("step: 0", "step: -1")));
-      yield* fs.writeFileString(join(cwd, "b.md"), document(`${header}\noutputs: []`));
+      yield* fs.writeFileString(join(cwd, "b.md"), document(`${header}\nunrecognized: true`));
       const error = yield* Effect.flip(loadPlan(".", cwd));
       expect(error.message).toContain("a.md");
       expect(error.message).toContain("b.md");
+      expect(error.message).toContain("step");
+      expect(error.message).toContain("unrecognized");
     }),
   );
   it.effect("rejects empty sets, files instead of directories, and missing directories", () =>
@@ -177,38 +179,4 @@ it.layer(Layer.mergeAll(BunFileSystem.layer, BunPath.layer))("discovery and grap
       );
     }),
   );
-});
-
-test("argv preserves quoted values as one argument and has no shell or persistence flags", () => {
-  const stage = parseStage(
-    document(
-      header
-        .replace("medium", "'high\"; x = true #'")
-        .replace("mock-model", "'some model; $(touch nope)'"),
-    ),
-    "safe.md",
-  );
-  const args = execArgs(stage, "/repo with space/subdir");
-  expect(args[args.indexOf("--model") + 1]).toBe(stage.model);
-  expect(args[args.indexOf("-c") + 1]).toBe('model_reasoning_effort="high\\"; x = true #"');
-  expect(args[args.indexOf("--cd") + 1]).toBe("/repo with space/subdir");
-  expect(args.at(-1)).toBe("-");
-  expect(args).toContain("--ephemeral");
-  expect(args).not.toContain("--full-auto");
-  expect(args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
-});
-
-test("line reporter preserves split UTF-8 and flushes partial bounded lines", () => {
-  const lines: string[] = [];
-  const sink = lineReporter((line) => lines.push(line));
-  const data = Buffer.from("héllo 🌍\r\npartial");
-  for (const byte of data) sink.data(Buffer.from([byte]));
-  sink.end();
-  expect(lines).toEqual(["héllo 🌍", "partial"]);
-  const long: string[] = [];
-  const bounded = lineReporter((line) => long.push(line));
-  bounded.data(Buffer.from("x".repeat(20_000)));
-  bounded.end();
-  expect(long.join("")).toHaveLength(20_000);
-  expect(Math.max(...long.map((l) => l.length))).toBeLessThanOrEqual(8_192);
 });

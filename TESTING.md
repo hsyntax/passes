@@ -6,8 +6,8 @@ migration has not been rerun on Linux. Temporary directories are canonicalized
 with `realpathSync` so macOS `/var` and `/private/var` aliases compare correctly.
 
 Bun 1.4.2 or newer is required to install the included lockfile. Vitest 5 runs in
-Node.js (24 LTS recommended); the CLI and fake Codex run in Bun. All tests use a
-fake Codex executable and temporary repositories; they make no model calls.
+Node.js (24 LTS recommended); the CLI and fake Codex run in Bun. CLI tests use a
+fake Codex executable and temporary repositories; no tests make model calls.
 
 To repeat installation and verification from the project directory:
 
@@ -26,14 +26,14 @@ bun dist/passes.js validate stages
 - Bundled Bun build passing
 - Example stage validation passing through the source and bundled CLI
 
-The 43 parser/unit tests cover required fields, unknown fields, malformed and
+The 39 parser/discovery tests cover required fields, unknown fields, malformed and
 ambiguous YAML, duplicate YAML keys, invalid numeric values, quoted numbers,
 control characters, BOM/CRLF, literal prompt preservation, empty prompts,
 recursive deterministic discovery, symlink cycles, name/slug collisions, numeric
-layer ordering, graph barriers, safe argv, and split UTF-8 output.
+layer ordering, and graph barriers.
 
-The 28 black-box CLI tests cover invalid plans never launching Codex, real
-concurrency verified by file barriers, later-step barriers, model/effort/argv and
+The 30 black-box CLI tests cover invalid plans never launching Codex, real
+concurrency verified by explicit file release gates, later-step barriers, model/effort/argv and
 stdin preservation, nested cwd, dirty file preservation, stdout/stderr labels,
 nonzero failure stopping advancement, sibling and descendant cancellation,
 TERM-ignoring subprocesses, exact SIGINT/SIGTERM exit codes, unsupported models
@@ -41,16 +41,31 @@ and efforts (including a later layer), old CLI versions, malformed catalogs,
 pagination, omitted/repeated cursors, and interrupted preflight cleanup. They also
 cover stubborn descendants after successful, failed, or signalled leaders,
 inherited output pipes, EPIPE cancellation, oversized catalog frames, and partial
-output flushing during cancellation.
+output flushing during cancellation, Unicode and long-line preservation, and useful
+help/version output. Stdout and stderr are checked separately. Quoted reasoning
+values are verified at the Codex process boundary, rather than by testing an argv
+builder. Unknown-field and argument cases exercise generic validation rather than
+preserving tests for removed capabilities.
 
 Tests import from `@effect/vitest`. Filesystem tests use `it.effect`, shared Bun
 filesystem/path layers, typed failure assertions, and scoped temporary directories.
-Two subprocess tests use `it.live` with `BunServices.layer` to verify bounded output
-collection, nonzero exits, and missing executables. Pure parser tests and black-box
+Three subprocess tests use `it.live` with `BunServices.layer` to verify complete
+output collection, bounded intact tails, nonzero exits, and missing executables.
+The fourth process test forces single-byte fragments through the exported line
+reporter: real OS pipes may coalesce writes, so a CLI test cannot reliably force
+a split UTF-8 character. Buffer-capacity constants are not asserted. Pure parser tests and black-box
 CLI tests use ordinary Vitest tests; real subprocess timing is not simulated.
 
 Run the suite with `bun run test`, or a targeted file with
 `bun run test test/process.test.ts`. The old `bun test` runner is no longer used.
+
+During the test review, temporarily redirecting stage stderr to stdout left the
+original CLI assertions passing and made the revised assertions fail. Further
+temporary faults removing TOML quoting, serializing same-step stages, decoding
+UTF-8 independently per chunk, and corrupting collected output tails each caused
+the relevant test to fail. All faults were restored before running the full checks;
+no production bug fix was needed. CLI workspaces clear inherited fixture settings
+and Git environment overrides to keep runs independent of the caller's environment.
 
 ## Codex checks
 

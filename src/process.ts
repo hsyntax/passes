@@ -32,22 +32,10 @@ export function collectProcess(command: string, args: readonly string[], cwd: st
       const proc = yield* startProcess(command, args, cwd);
       let stdout = "";
       let stderr = "";
-      const out = yield* proc.stdout.pipe(
-        Stream.decodeText(),
-        Stream.runForEach((data) =>
-          Effect.sync(() => {
-            stdout = (stdout + data).slice(-64_000);
-          }),
-        ),
+      const out = yield* captureTextTail(proc.stdout, 64_000, (text) => (stdout = text)).pipe(
         Effect.forkScoped,
       );
-      const err = yield* proc.stderr.pipe(
-        Stream.decodeText(),
-        Stream.runForEach((data) =>
-          Effect.sync(() => {
-            stderr = (stderr + data).slice(-8_000);
-          }),
-        ),
+      const err = yield* captureTextTail(proc.stderr, 8_000, (text) => (stderr = text)).pipe(
         Effect.forkScoped,
       );
       yield* Stream.run(Stream.empty, proc.stdin);
@@ -58,6 +46,24 @@ export function collectProcess(command: string, args: readonly string[], cwd: st
   ).pipe(
     Effect.timeout(10_000),
     Effect.mapError((error) => new PassesError(`${command}: ${message(error)}`)),
+  );
+}
+
+/** Drain a byte stream while retaining only its most recent decoded text. */
+export function captureTextTail<E, R>(
+  stream: Stream.Stream<Uint8Array, E, R>,
+  limit: number,
+  update: (text: string) => void,
+) {
+  let text = "";
+  return stream.pipe(
+    Stream.decodeText(),
+    Stream.runForEach((chunk) =>
+      Effect.sync(() => {
+        text = (text + chunk).slice(-limit);
+        update(text);
+      }),
+    ),
   );
 }
 

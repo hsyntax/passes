@@ -19,4 +19,4 @@ Study all tests and validate that they follow these principles :
 - When a useful test is impractical, verify another concrete way.
 - Avoid regression tests that validate that a deleted feature or capability that does not come back.
 
-If any test, does not follow these rules, update them such that they do follow these rules.
+If any test does not follow these rules, update them such that they do follow these rules, then commit.
