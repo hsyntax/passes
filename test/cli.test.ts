@@ -623,24 +623,33 @@ describe("passes CLI acceptance", () => {
     timeout,
   );
 
-  test(
-    "a failed stage kills its own TERM-ignoring descendants before returning",
-    async () => {
+  test.each([0, 17])(
+    "a stage exiting with code %s kills its own TERM-ignoring descendants before returning",
+    async (exitCode) => {
       const ws = workspace();
       stage(ws, "failure.md", {
         prompt: directive("failure", {
           spawnDescendant: true,
           waitForDescendantOf: ["failure"],
-          exitCode: 17,
+          exitCode,
         }),
       });
-      stage(ws, "later.md", { step: 1, prompt: directive("later") });
+      stage(ws, "later.md", {
+        step: 1,
+        prompt: directive("later", {
+          appendFile: { path: "later.txt", content: "later stage ran\n" },
+        }),
+      });
       const result = await launch(ws).result;
-      expect(result.code).toBe(1);
-      expect(result.stderr).toContain("exit code 17");
+      expect(result.code).toBe(exitCode === 0 ? 0 : 1);
+      if (exitCode === 0) {
+        expect(readFileSync(join(ws.cwd, "later.txt"), "utf8")).toBe("later stage ran\n");
+      } else {
+        expect(result.stderr).toContain("exit code 17");
+      }
       expect(events(ws).some((event) => event.kind === "descendant")).toBe(true);
       expect(events(ws).some((event) => event.kind === "start" && event.id === "later")).toBe(
-        false,
+        exitCode === 0,
       );
       await expectFixtureStopped(ws);
     },

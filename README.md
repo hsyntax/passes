@@ -277,19 +277,20 @@ tools; validation, help, and version also run without Git or Codex. Tests make n
 inference requests, configure no real account, and do not modify a user's Git
 working tree. See `TESTING.md`.
 
-Runtime dependencies are Effect v4, `@effect/platform-node-shared`, and `yaml`.
-Stage reads and directory checks use Effect's filesystem service with the shared
-implementation that also backs `@effect/platform-bun/BunFileSystem`. Both Effect
-packages are pinned to 4.0.1. `bun run repos:sync` verifies both packages against
-the vendored release tree.
+Runtime dependencies are Effect v4, `@effect/platform-bun`, and `yaml`.
+The CLI provides `BunServices.layer` for platform services. Its filesystem,
+process, path, and stdio implementations reuse `@effect/platform-node-shared`.
+All three Effect packages resolve to 4.0.1; `bun run repos:sync` verifies their
+manifests against the vendored release tree.
 
 Discovery keeps Node's directory entries to ignore symlinks without extra file
 checks. Reads use `FileSystem.readFile` and Node UTF-8 decoding to preserve BOMs;
 the service owns read cancellation. The YAML dependency retains full core-schema
 parsing, duplicate-key diagnostics, and alias/tag rejection. Effect's YAML parser
-supports a narrower grammar. Process execution uses Effect's spawner with bounded
-pipe draining and explicit scoped TERM-to-KILL cleanup for descendants, including
-after a nonzero leader exit. The project deliberately avoids
+supports a narrower grammar. Process execution uses Effect's scoped spawner with
+bounded pipe draining and a 500 ms TERM-to-KILL deadline for descendants, including
+after a nonzero leader exit. The platform owns cleanup without an extra runner
+finalizer. The project deliberately avoids
 worktree libraries, databases, external services, or a second workflow format.
 
 ## Codex references

@@ -21,7 +21,7 @@ bun dist/passes.js validate stages
 
 ## Automated checks
 
-- 139 CLI behavior tests passing, zero failures
+- 140 CLI behavior tests passing, zero failures
 - Strict TypeScript typecheck passing
 - Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
@@ -280,3 +280,35 @@ focused CLI/logging/push tests (11 passing), the five probes above, and
 `bun run check` (typecheck, lint, formatting, 139 passing tests, and build).
 Source and bundled CLI validation each reported eight stages in eight layers;
 `git diff --check` and the formatting check after this documentation update passed.
+
+## Bun platform package adoption
+
+Reviewed the full vendored Effect 4.0.1 package inventory and searched source,
+documentation, examples, and tests for CLI, encoding, RPC, process, filesystem,
+runtime, and testing integrations. AI, SQL, UI, telemetry, and build-tool packages
+do not replace work in this local subprocess runner. CLI parsing would require
+adapters for the existing flag restrictions and diagnostics. NDJSON decoding
+lacks the current incomplete-line limit; RPC serialization skips malformed JSON
+and changes framing limits. YAML's supported grammar is narrower. The Bun runtime
+runner would still need custom signal reporting, first-signal exit codes, and
+log-write/EPIPE cancellation, so the existing entrypoint remains.
+
+Before → After: four platform-layer imports and custom layer composition →
+`BunServices.layer`; an extra process `acquireRelease`/`kill` finalizer → the
+spawner's own scoped cleanup. The published Bun 4.0.1 package re-exports the same
+shared process, filesystem, path, and stdio implementations. Its Effect peer and
+shared dependency ranges are `^4.0.1`; both lockfiles resolve all three to 4.0.1
+without other upgrades. Repository sync now verifies the Bun manifest too.
+The installed shared spawner's release path already escalates after successful,
+failed, or signalled leader exits. Commands retain the 500 ms deadline, and pipe
+draining, error mapping, and stage concurrency are unchanged.
+
+Extended the CLI regression to successful leader exits with TERM-ignoring
+descendants, requiring the later stage's file edit as well as complete cleanup.
+The existing failed-leader, sibling cancellation, signal, and closed-pipe checks
+remain. Verified on macOS with Bun 1.4.2: five focused cleanup tests, frozen Bun
+installation, frozen pnpm lockfile validation, repository sync, and
+`bun run check` (typecheck, lint, formatting, 140 tests, and build). Source and
+bundled stage validation report eight stages in eight layers. No live model
+calls were made. `git diff --check` and the final documentation formatting check
+also passed.

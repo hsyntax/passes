@@ -8,7 +8,7 @@ importers:
 
   .:
     dependencies:
-      '@effect/platform-node-shared':
+      '@effect/platform-bun':
         specifier: 4.0.1
         version: 4.0.1(effect@4.0.1)
       effect:
@@ -32,6 +32,11 @@ importers:
         version: 5.9.3
 
 packages:
+
+  '@effect/platform-bun@4.0.1':
+    resolution: {integrity: sha512-m+QR4bp39ZWujCuEsUhZADIYIOFZcUHHlmrixENZqZRbEYgaPLMUWiPrRJ69CM4BuuHW8oCOxfMGUU7oSw/o5g==}
+    peerDependencies:
+      effect: ^4.0.1
 
   '@effect/platform-node-shared@4.0.1':
     resolution: {integrity: sha512-VanaejudEhKJ4mpmqnEzdncVUhN6sGSO9ZDND54mRxAlZxj+4dYAWjDTYAy9o4tJo9aALeP2U8cVcOFzEdSeLg==}
@@ -354,6 +359,14 @@ packages:
     hasBin: true
 
 snapshots:
+
+  '@effect/platform-bun@4.0.1(effect@4.0.1)':
+    dependencies:
+      '@effect/platform-node-shared': 4.0.1(effect@4.0.1)
+      effect: 4.0.1
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
 
   '@effect/platform-node-shared@4.0.1(effect@4.0.1)':
     dependencies:

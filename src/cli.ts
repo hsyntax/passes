@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
+import { BunServices } from "@effect/platform-bun";
 import { Cause, Clock, DateTime, Effect, Exit, Stdio } from "effect";
 import { message, PassesError } from "./errors.ts";
-import { runCommand, nodeProcessLayer } from "./process.ts";
+import { runCommand } from "./process.ts";
 import { createRunReporter, interruptNotice, terminal } from "./reporter.ts";
 import type { Reporter, RunReporter } from "./reporter.ts";
 import { runPlan } from "./runner.ts";
@@ -159,7 +160,7 @@ const handleOutputError = (error: NodeJS.ErrnoException) => {
 };
 process.stdout.on("error", handleOutputError);
 process.stderr.on("error", handleOutputError);
-const interrupt = Effect.runCallback(main().pipe(Effect.provide(nodeProcessLayer)), {
+const interrupt = Effect.runCallback(main().pipe(Effect.provide(BunServices.layer)), {
   onExit: (exit) => {
     process.removeListener("SIGINT", sigint);
     process.removeListener("SIGTERM", sigterm);

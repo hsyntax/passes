@@ -29,6 +29,10 @@ const repositories: ReadonlyArray<Repository> = [
         packageName: "effect",
       },
       {
+        packageDirectory: "packages/platform/bun",
+        packageName: "@effect/platform-bun",
+      },
+      {
         packageDirectory: "packages/platform/node-shared",
         packageName: "@effect/platform-node-shared",
       },

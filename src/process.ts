@@ -1,18 +1,10 @@
-import { layer as childProcessLayer } from "@effect/platform-node-shared/NodeChildProcessSpawner";
-import { layer as fileSystemLayer } from "@effect/platform-node-shared/NodeFileSystem";
-import { layer as pathLayer } from "@effect/platform-node-shared/NodePath";
-import { layer as stdioLayer } from "@effect/platform-node-shared/NodeStdio";
-import { Effect, Fiber, Layer, Stream } from "effect";
+import { Effect, Fiber, Stream } from "effect";
 import * as ChildProcess from "effect/process/ChildProcess";
 import type { ChildProcessHandle } from "effect/process/ChildProcessSpawner";
 import type * as PlatformError from "effect/PlatformError";
 import { message, PassesError } from "./errors.ts";
 
 const FORCE_KILL_AFTER = "500 millis";
-
-export const nodeProcessLayer = childProcessLayer.pipe(
-  Layer.provideMerge(Layer.mergeAll(fileSystemLayer, pathLayer, stdioLayer)),
-);
 
 export const startProcess = Effect.fn(
   (
@@ -21,23 +13,21 @@ export const startProcess = Effect.fn(
     workingDirectory: string,
     input?: string | Stream.Stream<Uint8Array, PlatformError.PlatformError>,
   ) =>
-    Effect.acquireRelease(
-      ChildProcess.make(command, [...args], {
-        cwd: workingDirectory,
-        detached: true,
-        forceKillAfter: FORCE_KILL_AFTER,
-        stdin:
-          input === undefined
-            ? "ignore"
-            : typeof input === "string"
-              ? Stream.make(new TextEncoder().encode(input))
-              : input,
-        stdout: "pipe",
-        stderr: "pipe",
-      }),
-      // Explicitly escalate cleanup for surviving descendants after the leader exits.
-      (proc) => proc.kill({ forceKillAfter: FORCE_KILL_AFTER }).pipe(Effect.ignore),
-    ).pipe(
+    // The platform spawner owns scoped process-group cleanup, including escalation
+    // after the leader exits. Keep the deadline on the command it releases.
+    ChildProcess.make(command, [...args], {
+      cwd: workingDirectory,
+      detached: true,
+      forceKillAfter: FORCE_KILL_AFTER,
+      stdin:
+        input === undefined
+          ? "ignore"
+          : typeof input === "string"
+            ? Stream.make(new TextEncoder().encode(input))
+            : input,
+      stdout: "pipe",
+      stderr: "pipe",
+    }).pipe(
       Effect.mapError((error) => new PassesError(`Could not start ${command}: ${message(error)}`)),
     ),
 );
