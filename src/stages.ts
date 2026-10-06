@@ -108,13 +108,19 @@ export function parseStage(source: string, file: string): Stage {
 
 function discoverStageFiles(stagesDirectory: string): Effect.Effect<string[], unknown, never> {
   return Effect.gen(function* () {
-    const directory = yield* Effect.tryPromise(() => stat(stagesDirectory));
+    const directory = yield* Effect.tryPromise({
+      try: () => stat(stagesDirectory),
+      catch: (error) => error,
+    });
     if (!directory.isDirectory())
       return yield* Effect.fail(new PassesError(`${stagesDirectory}: expected a stages directory`));
     const stageFiles: string[] = [];
     const walk = (dir: string): Effect.Effect<void, unknown, never> =>
       Effect.gen(function* () {
-        const entries = yield* Effect.tryPromise(() => readdir(dir, { withFileTypes: true }));
+        const entries = yield* Effect.tryPromise({
+          try: () => readdir(dir, { withFileTypes: true }),
+          catch: (error) => error,
+        });
         entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
         for (const entry of entries) {
           const path = join(dir, entry.name);
@@ -173,10 +179,11 @@ export const loadPlan = Effect.fn("Stages.loadPlan")((stageDirectory: string, cw
         errors.push(message(error));
       }
     }
-    if (errors.length)
-      throw new PassesError(
-        `Invalid stage configuration:\n${errors.map((e) => `  ${e}`).join("\n")}`,
+    if (errors.length) {
+      return yield* Effect.fail(
+        new PassesError(`Invalid stage configuration:\n${errors.map((e) => `  ${e}`).join("\n")}`),
       );
+    }
     const steps = [...new Set(stages.map((s) => s.step))].sort((a, b) => a - b);
     return {
       cwd,
