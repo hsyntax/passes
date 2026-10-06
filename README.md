@@ -77,15 +77,16 @@ Adapt the example stages to your files before running them.
 
 ## Repository stages
 
-The included `stages` directory runs seven sequential passes:
+The included `stages` directory runs eight sequential passes:
 
 1. Step 0: Clean up tests (`gpt-6.1-sol`, `high`)
 2. Step 1: Adopt Effect ecosystem packages (`gpt-6.1-sol`, `high`), replacing custom implementation with suitable packages and services across the ecosystem
-3. Step 2: Isolate non-Effect boundaries (`gpt-6-luna`, `high`)
+3. Step 2: Isolate non-Effect boundaries (`gpt-6-luna`, `xhigh`)
 4. Step 3: Apply Effect modules (`gpt-6-luna`, `xhigh`), including composition and behavior preservation
 5. Step 4: Reduce redundant I/O (`gpt-6.1-sol`, `xhigh`), removing unnecessary external operations and verifying improvements with counts or measurements
-6. Step 5: Align domain names (`gpt-6-luna`, `high`), using established vocabulary within each bounded context
-7. Step 6: Choose Effect function constructors (`gpt-6-luna`, `high`), preserving intentional observability
+6. Step 5: Remove dead code (`gpt-6.1-sol`, `high`), verifying unused or redundant paths before deleting them
+7. Step 6: Align domain names (`gpt-6-luna`, `xhigh`), using established vocabulary within each bounded context
+8. Step 7: Choose Effect function constructors (`gpt-6-luna`, `xhigh`), preserving intentional observability
 
 Package adoption runs before boundary adapters and local composition rewrites. It
 starts with the full vendored `repos/effect` package tree and looks beyond platform
