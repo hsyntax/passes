@@ -124,7 +124,7 @@ async function discoverStageFiles(stagesDirectory: string): Promise<string[]> {
   return stageFiles;
 }
 
-export const loadPlan = (stageDirectory: string, cwd: string) =>
+export const loadPlan = Effect.fn("Stages.loadPlan")((stageDirectory: string, cwd: string) =>
   Effect.tryPromise({
     try: async (): Promise<Plan> => {
       const absolute = resolve(cwd, stageDirectory);
@@ -170,7 +170,8 @@ export const loadPlan = (stageDirectory: string, cwd: string) =>
       error instanceof PassesError
         ? error
         : new PassesError(`Could not read stages: ${message(error)}`),
-  });
+  }),
+);
 
 export function renderGraph(plan: Plan): string {
   const lines = [

@@ -33,8 +33,8 @@ function groupExists(child: ChildProcessWithoutNullStreams): boolean {
   }
 }
 
-export function startProcess(command: string, args: readonly string[], cwd: string) {
-  return Effect.acquireRelease(
+export const startProcess = Effect.fn((command: string, args: readonly string[], cwd: string) =>
+  Effect.acquireRelease(
     Effect.try({
       try: (): ManagedProcess => {
         const child = spawn(command, [...args], {
@@ -82,17 +82,18 @@ export function startProcess(command: string, args: readonly string[], cwd: stri
           }),
         );
       }),
-  );
-}
+  ),
+);
 
-export const waitForExit = (proc: ManagedProcess) =>
+export const waitForExit = Effect.fn((proc: ManagedProcess) =>
   Effect.tryPromise({
     try: () => proc.result,
     catch: (error) => (error instanceof PassesError ? error : new PassesError(message(error))),
-  });
+  }),
+);
 
-export function collectProcess(command: string, args: readonly string[], cwd: string) {
-  return Effect.scoped(
+export const collectProcess = Effect.fn((command: string, args: readonly string[], cwd: string) =>
+  Effect.scoped(
     Effect.gen(function* () {
       const proc = yield* startProcess(command, args, cwd);
       let stdout = "";
@@ -112,8 +113,8 @@ export function collectProcess(command: string, args: readonly string[], cwd: st
   ).pipe(
     Effect.timeout(10_000),
     Effect.mapError((error) => new PassesError(`${command}: ${message(error)}`)),
-  );
-}
+  ),
+);
 
 /** Prefix streaming output without retaining unbounded transcripts or splitting UTF-8. */
 export function lineReporter(write: (line: string) => void) {

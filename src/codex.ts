@@ -41,8 +41,8 @@ export function execArgs(stage: Stage, cwd: string): string[] {
   ];
 }
 
-export function loadModelCatalog(cwd: string) {
-  return Effect.scoped(
+export const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")((cwd: string) =>
+  Effect.scoped(
     Effect.gen(function* () {
       const proc = yield* startProcess("codex", ["app-server", "--listen", "stdio://"], cwd);
       return yield* Effect.callback<readonly CatalogModel[], PassesError>((resume) => {
@@ -153,11 +153,11 @@ export function loadModelCatalog(cwd: string) {
         ),
       );
     }),
-  );
-}
+  ),
+);
 
-export function preflight(plan: Plan) {
-  return Effect.gen(function* () {
+export const preflight = Effect.fn("Codex.preflight")((plan: Plan) =>
+  Effect.gen(function* () {
     if (process.platform === "win32")
       return yield* Effect.fail(
         new PassesError(
@@ -209,5 +209,5 @@ export function preflight(plan: Plan) {
           `Model compatibility check failed:\n${errors.map((error) => `  ${error}`).join("\n")}`,
         ),
       );
-  });
-}
+  }),
+);
