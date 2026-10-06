@@ -184,12 +184,19 @@ export const loadPlan = Effect.fn("Stages.loadPlan")((stageDirectory: string, cw
         new PassesError(`Invalid stage configuration:\n${errors.map((e) => `  ${e}`).join("\n")}`),
       );
     }
-    const steps = [...new Set(stages.map((s) => s.step))].sort((a, b) => a - b);
+    const layersByStep = new Map<number, Stage[]>();
+    for (const stage of stages) {
+      const layer = layersByStep.get(stage.step);
+      if (layer) layer.push(stage);
+      else layersByStep.set(stage.step, [stage]);
+    }
     return {
       cwd,
       directory: absolute,
       stages,
-      layers: steps.map((step) => ({ step, stages: stages.filter((s) => s.step === step) })),
+      layers: [...layersByStep]
+        .sort(([left], [right]) => left - right)
+        .map(([step, layerStages]) => ({ step, stages: layerStages })),
     };
   }).pipe(
     Effect.mapError((error) =>
