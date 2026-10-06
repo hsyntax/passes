@@ -83,6 +83,8 @@ export const runCommand = Effect.fn("Process.runCommand")(
 /** Prefix streamed process output while bounding the memory used for a line. */
 export function createLineReporter<E, R>(write: (line: string) => Effect.Effect<void, E, R>) {
   let pending = "";
+  // These callbacks consume the buffer at call time. Effect.fn would defer that
+  // mutation until execution, changing which call owns each batch of lines.
   function flush(full: boolean): Effect.Effect<void, E, R> {
     const lines: string[] = [];
     let newline = pending.indexOf("\n");

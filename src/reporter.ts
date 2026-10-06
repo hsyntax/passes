@@ -116,9 +116,9 @@ export const createRunReporter = Effect.fn("Reporter.createRunReporter")(
         ),
       );
       const reporter: Reporter = {
-        out: (line) => Effect.andThen(writeLogLine(line), terminal.out(line)),
-        err: (line) => Effect.andThen(writeLogLine(line), terminal.err(line)),
-        detail: (line, stream = "stdout") =>
+        out: Effect.fn((line: string) => Effect.andThen(writeLogLine(line), terminal.out(line))),
+        err: Effect.fn((line: string) => Effect.andThen(writeLogLine(line), terminal.err(line))),
+        detail: Effect.fn((line: string, stream: "stdout" | "stderr" = "stdout") =>
           writeLogLine(line, true).pipe(
             Effect.andThen(
               verbose
@@ -128,22 +128,23 @@ export const createRunReporter = Effect.fn("Reporter.createRunReporter")(
                 : Effect.void,
             ),
           ),
+        ),
       };
 
       return {
         reporter,
         path: logPath,
-        context: (line: string) =>
+        context: Effect.fn((line: string) =>
           writeLogLine(line).pipe(Effect.andThen(verbose ? terminal.out(line) : Effect.void)),
-        finish: (unsuccessful: boolean) =>
-          Effect.gen(function* () {
-            yield* logFile.sync.pipe(
-              Effect.catch((error) => Effect.sync(() => reportLogFailure(error))),
-            );
-            if (unsuccessful && !verbose && recentOutput)
-              yield* terminal.err(`Recent output:\n${recentOutput.trimEnd()}`);
-            yield* terminal.out(`Log: ${logPath}`);
-          }),
+        ),
+        finish: Effect.fn(function* (unsuccessful: boolean) {
+          yield* logFile.sync.pipe(
+            Effect.catch((error) => Effect.sync(() => reportLogFailure(error))),
+          );
+          if (unsuccessful && !verbose && recentOutput)
+            yield* terminal.err(`Recent output:\n${recentOutput.trimEnd()}`);
+          yield* terminal.out(`Log: ${logPath}`);
+        }),
       };
     }),
 );

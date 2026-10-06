@@ -19,7 +19,7 @@ const StageFrontmatterSchema = Schema.Struct({
   scope: Schema.optionalKey(ScopeString),
 });
 
-export const parseScope = (scope: unknown) =>
+export const parseScope = Effect.fn((scope: unknown) =>
   Schema.decodeUnknownEffect(ScopeString)(scope).pipe(
     Effect.mapError(
       (cause) =>
@@ -28,7 +28,8 @@ export const parseScope = (scope: unknown) =>
           { cause },
         ),
     ),
-  );
+  ),
+);
 
 export interface Stage {
   readonly name: string;
