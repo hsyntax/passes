@@ -258,7 +258,8 @@ describe("passes CLI acceptance", () => {
       stage(ws, "stage.md");
       const result = await launch(ws).result;
       expect(result.code).toBe(1);
-      expect(result.output).toMatch(/old|version|0\.159\.2/i);
+      expect(result.stderr).toMatch(/0\.159\.1.*too old/i);
+      expect(result.stderr).toContain("0.159.2 or newer");
       expect(events(ws).some((event) => event.kind === "app-server")).toBe(false);
       expect(events(ws).some((event) => event.kind === "start")).toBe(false);
       await expectFixtureStopped(ws);
@@ -274,7 +275,7 @@ describe("passes CLI acceptance", () => {
       stage(ws, "stage.md");
       const result = await launch(ws).result;
       expect(result.code).toBe(1);
-      expect(result.output).toMatch(/catalog|compatibility|JSON/i);
+      expect(result.stderr).toMatch(/catalog.*JSON/i);
       expect(events(ws).some((event) => event.kind === "start")).toBe(false);
       await expectFixtureStopped(ws);
     },
@@ -305,9 +306,14 @@ describe("passes CLI acceptance", () => {
     async () => {
       const ws = workspace();
       ws.env.PASSES_TEST_CATALOG_MODE = "paginated";
-      stage(ws, "stage.md");
+      stage(ws, "stage.md", {
+        prompt: directive("later-page", {
+          appendFile: { path: "edit.txt", content: "later page model ran\n" },
+        }),
+      });
       const result = await launch(ws).result;
       expect(result.code).toBe(0);
+      expect(readFileSync(join(ws.cwd, "edit.txt"), "utf8")).toBe("later page model ran\n");
       const log = events(ws);
       const requests = log.filter((event) => event.kind === "rpc" && event.method === "model/list");
       expect(requests.some((event) => event.cursor === "page-2")).toBe(true);
@@ -327,9 +333,14 @@ describe("passes CLI acceptance", () => {
     async () => {
       const ws = workspace();
       ws.env.PASSES_TEST_CATALOG_MODE = "no-cursor";
-      stage(ws, "stage.md");
+      stage(ws, "stage.md", {
+        prompt: directive("complete-catalog", {
+          appendFile: { path: "edit.txt", content: "complete catalog model ran\n" },
+        }),
+      });
       const result = await launch(ws).result;
       expect(result.code).toBe(0);
+      expect(readFileSync(join(ws.cwd, "edit.txt"), "utf8")).toBe("complete catalog model ran\n");
       const log = events(ws);
       expect(log.filter((event) => event.kind === "start")).toHaveLength(1);
       await expectFixtureStopped(ws);
@@ -345,7 +356,7 @@ describe("passes CLI acceptance", () => {
       stage(ws, "stage.md");
       const result = await launch(ws).result;
       expect(result.code).toBe(1);
-      expect(result.output).toMatch(/cursor|pagination/i);
+      expect(result.stderr).toMatch(/repeated.*cursor/i);
       expect(events(ws).some((event) => event.kind === "start")).toBe(false);
       await expectFixtureStopped(ws);
     },
@@ -549,23 +560,23 @@ describe("passes CLI acceptance", () => {
       const longLine = "x".repeat(20_000);
       stage(ws, "long.md", {
         name: "Long stage",
-        prompt: directive("long", { stdout: longLine, hold: true }),
+        prompt: directive("long", { stdout: `${longLine}\n`, hold: true }),
       });
-      const execution = launch(ws, ["run", "stages", "--verbose"]);
-      await waitFor(
-        () =>
-          execution.stdout.includes("[Long stage] x") &&
-          execution.stdout.includes("Unicode stage: completed"),
-        "output before the long-running stage exits",
-      );
-      execution.child.kill("SIGINT");
-      const result = await execution.result;
-      expect(result.code).toBe(130);
       const stageLines = (text: string, prefix: string) =>
         text
           .split("\n")
           .filter((line) => line.startsWith(prefix))
           .map((line) => line.slice(prefix.length));
+      const execution = launch(ws, ["run", "stages", "--verbose"]);
+      await waitFor(
+        () =>
+          stageLines(execution.stdout, "[Long stage] ").join("") === longLine &&
+          execution.stdout.includes("Unicode stage: completed"),
+        "complete long output and drained Unicode output before cancellation",
+      );
+      execution.child.kill("SIGINT");
+      const result = await execution.result;
+      expect(result.code).toBe(130);
       expect(stageLines(result.stdout, "[Unicode stage] ")).toEqual(["héllo 🌍", "partial output"]);
       expect(stageLines(result.stderr, "[Unicode stage stderr] ")).toEqual([
         "échec 🌍",

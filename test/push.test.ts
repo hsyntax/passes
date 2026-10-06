@@ -90,10 +90,15 @@ describe("push after successful stages", () => {
     "skips pushing with no remote",
     async () => {
       const ws = workspace();
-      stage(ws, "stage.md");
+      stage(ws, "stage.md", {
+        prompt: directive("edit", {
+          appendFile: { path: "edit.txt", content: "uncommitted stage edit\n" },
+        }),
+      });
       const result = await launch(ws).result;
       expect(result.code).toBe(0);
       expect(result.output).toContain("No Git remote configured; skipping push.");
+      expect(readFileSync(join(ws.cwd, "edit.txt"), "utf8")).toBe("uncommitted stage edit\n");
     },
     timeout,
   );
@@ -105,6 +110,7 @@ describe("push after successful stages", () => {
       git(ws, "remote", "rename", "origin", "publish");
       git(ws, "push", "-u", "publish", "HEAD:refs/heads/review");
       git(ws, "config", "push.default", "upstream");
+      const initial = git(ws, "rev-parse", "HEAD");
       stage(ws, "stage.md", {
         prompt: directive("edit", {
           appendFile: { path: "edit.txt", content: "edit", commit: true },
@@ -112,9 +118,11 @@ describe("push after successful stages", () => {
       });
       const result = await launch(ws).result;
       expect(result.code).toBe(0);
+      expect(git(ws, "rev-parse", "HEAD")).not.toBe(initial);
       expect(git(ws, "--git-dir", remote, "rev-parse", "review")).toBe(
         git(ws, "rev-parse", "HEAD"),
       );
+      expect(git(ws, "--git-dir", remote, "show", "review:edit.txt")).toBe("edit");
     },
     timeout,
   );
@@ -131,7 +139,8 @@ describe("push after successful stages", () => {
       });
       stage(ws, "failure.md", { step: 1, prompt: directive("failure", { exitCode: 17 }) });
       const result = await launch(ws).result;
-      expect(result.code).not.toBe(0);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("exit code 17");
       expect(git(ws, "rev-parse", "HEAD")).not.toBe(initial);
       expect(git(ws, "--git-dir", remote, "rev-parse", "main")).toBe(initial);
     },

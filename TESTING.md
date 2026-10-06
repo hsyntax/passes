@@ -21,7 +21,7 @@ bun dist/passes.js validate stages
 
 ## Automated checks
 
-- 136 CLI behavior tests passing, zero failures
+- 139 CLI behavior tests passing, zero failures
 - Strict TypeScript typecheck passing
 - Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
@@ -252,3 +252,31 @@ several stage commit attempts were denied under the old `never` approval policy.
 The updated `--approve-for-me` invocation was checked against installed CLI help
 and the fake fixture; its live approval flow has not been rerun. The automated
 suite makes no model calls, including its concurrency, cancellation, and push tests.
+
+## Test-principle review (October 2026)
+
+Reviewed all five test files, the shared helpers, and the Codex fixture. Existing
+CLI coverage, isolated environments, real Git operations, and external process
+observations remain. No production code or tests of retired capabilities were added.
+
+Before → After: a model name in the logged plan → the actual compatibility error
+in the log; equal local/remote refs from setup → a new commit and expected remote
+file content; an excerpt length taken from observed output → the expected final
+20 diagnostics. Catalog success also requires the stage's file edit, and failure
+checks identify the specific version, JSON, cursor, or stage error.
+
+The streaming test waits for complete long output and drained Unicode output
+before cancellation. A temporary fixture that delays the final long-output chunk
+made the original test fail and the revised test pass with unchanged production
+code. Partial-line cancellation remains covered by the logging test.
+
+Four production mutations in temporary copies passed the original targeted tests
+and failed the revised tests: omitting logged errors, skipping stage execution,
+retaining only one recent diagnostic, and replacing the catalog error with a
+generic message. Temporary copies were removed after each probe.
+
+Checks run on macOS with Bun 1.4.2 and Git 2.47.1: baseline `bun test` (139 passing),
+focused CLI/logging/push tests (11 passing), the five probes above, and
+`bun run check` (typecheck, lint, formatting, 139 passing tests, and build).
+Source and bundled CLI validation each reported eight stages in eight layers;
+`git diff --check` and the formatting check after this documentation update passed.
