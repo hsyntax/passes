@@ -13,7 +13,7 @@ const CatalogPage = Schema.Struct({
   data: Schema.Array(CatalogEntry),
   nextCursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
-export type Model = typeof CatalogEntry.Type;
+export type CatalogModel = typeof CatalogEntry.Type;
 
 export function stagePrompt(stage: Stage, scopeOverride?: string): string {
   const scope = scopeOverride ?? stage.scope;
@@ -41,19 +41,19 @@ export function execArgs(stage: Stage, cwd: string): string[] {
   ];
 }
 
-export function readCatalog(cwd: string) {
+export function loadModelCatalog(cwd: string) {
   return Effect.scoped(
     Effect.gen(function* () {
       const proc = yield* startProcess("codex", ["app-server", "--listen", "stdio://"], cwd);
-      return yield* Effect.callback<readonly Model[], PassesError>((resume) => {
+      return yield* Effect.callback<readonly CatalogModel[], PassesError>((resume) => {
         let pending = "";
         let stderr = "";
         let finished = false;
         let requestId = 1;
         let initialized = false;
-        const models: Model[] = [];
+        const catalogModels: CatalogModel[] = [];
         const cursors = new Set<string>();
-        const finish = (result: Effect.Effect<readonly Model[], PassesError>) => {
+        const finish = (result: Effect.Effect<readonly CatalogModel[], PassesError>) => {
           if (finished) return;
           finished = true;
           resume(result);
@@ -77,7 +77,7 @@ export function readCatalog(cwd: string) {
             params: { limit: 100, includeHidden: true, ...(cursor ? { cursor } : {}) },
           });
         };
-        const handle = (line: string) => {
+        const handleCatalogResponse = (line: string) => {
           if (finished || !line.trim()) return;
           try {
             const response: unknown = JSON.parse(line);
@@ -94,18 +94,18 @@ export function readCatalog(cwd: string) {
               return;
             }
             const page = Schema.decodeUnknownSync(CatalogPage)(rpc.result);
-            models.push(...page.data);
+            catalogModels.push(...page.data);
             if (page.nextCursor) {
               if (cursors.has(page.nextCursor))
                 throw new Error("server repeated its pagination cursor");
               cursors.add(page.nextCursor);
               if (cursors.size > 100) throw new Error("catalog exceeded 100 pages");
               list(page.nextCursor);
-            } else if (!models.length) {
+            } else if (!catalogModels.length) {
               throw new Error(
                 "server returned no models; check Codex installation/provider configuration",
               );
-            } else finish(Effect.succeed(models));
+            } else finish(Effect.succeed(catalogModels));
           } catch (error) {
             fail(error);
           }
@@ -116,7 +116,7 @@ export function readCatalog(cwd: string) {
           pending += chunk;
           let newline = pending.indexOf("\n");
           while (newline >= 0) {
-            handle(pending.slice(0, newline));
+            handleCatalogResponse(pending.slice(0, newline));
             pending = pending.slice(newline + 1);
             newline = pending.indexOf("\n");
           }
@@ -186,7 +186,7 @@ export function preflight(plan: Plan) {
           `Codex ${match[0]} is too old. Install Codex CLI 0.159.2 or newer for the verified model-catalog protocol and execution flags.`,
         ),
       );
-    const catalog = yield* readCatalog(plan.cwd);
+    const catalog = yield* loadModelCatalog(plan.cwd);
     const errors: string[] = [];
     for (const stage of plan.stages) {
       const model = catalog.find((item) => item.model === stage.model);

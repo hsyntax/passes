@@ -4,13 +4,19 @@ import { Effect, Schema } from "effect";
 import { parseDocument } from "yaml";
 import { message, PassesError } from "./errors.ts";
 
-const Text = Schema.String.check(Schema.isMinLength(1), Schema.isPattern(/^[^\p{Cc}\p{Cf}]+$/u));
-const ScopeText = Text.check(Schema.isPattern(/\S/), Schema.isPattern(/^[^\p{Zl}\p{Zp}]+$/u));
-const Metadata = Schema.Struct({
-  name: Text,
+const FrontmatterText = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isPattern(/^[^\p{Cc}\p{Cf}]+$/u),
+);
+const ScopeText = FrontmatterText.check(
+  Schema.isPattern(/\S/),
+  Schema.isPattern(/^[^\p{Zl}\p{Zp}]+$/u),
+);
+const StageFrontmatter = Schema.Struct({
+  name: FrontmatterText,
   step: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
-  model: Text,
-  reasoning_effort: Text,
+  model: FrontmatterText,
+  reasoning_effort: FrontmatterText,
   scope: Schema.optionalKey(ScopeText),
 });
 
@@ -79,30 +85,31 @@ export function parseStage(source: string, file: string): Stage {
       ]),
     );
   }
-  let metadata: typeof Metadata.Type;
+  let stageFrontmatter: typeof StageFrontmatter.Type;
   try {
-    metadata = Schema.decodeUnknownSync(Metadata, { onExcessProperty: "error", errors: "all" })(
-      raw,
-    );
+    stageFrontmatter = Schema.decodeUnknownSync(StageFrontmatter, {
+      onExcessProperty: "error",
+      errors: "all",
+    })(raw);
   } catch (error) {
     throw new PassesError(`${file}: frontmatter: ${message(error)}`);
   }
-  if (!Number.isSafeInteger(metadata.step)) {
+  if (!Number.isSafeInteger(stageFrontmatter.step)) {
     throw new PassesError(`${file}: step must be a nonnegative safe integer`);
   }
   const prompt = match[2] ?? "";
   if (!prompt.trim()) throw new PassesError(`${file}: prompt body must not be empty`);
   if (prompt.includes("\0"))
     throw new PassesError(`${file}: prompt body must not contain NUL bytes`);
-  const slug = slugify(metadata.name);
+  const slug = slugify(stageFrontmatter.name);
   if (!slug) throw new PassesError(`${file}: name must contain at least one letter or number`);
-  return { ...metadata, slug, prompt, file };
+  return { ...stageFrontmatter, slug, prompt, file };
 }
 
-async function discover(directory: string): Promise<string[]> {
-  if (!(await stat(directory)).isDirectory())
-    throw new PassesError(`${directory}: expected a stages directory`);
-  const files: string[] = [];
+async function discoverStageFiles(stagesDirectory: string): Promise<string[]> {
+  if (!(await stat(stagesDirectory)).isDirectory())
+    throw new PassesError(`${stagesDirectory}: expected a stages directory`);
+  const stageFiles: string[] = [];
   async function walk(dir: string): Promise<void> {
     const entries = await readdir(dir, { withFileTypes: true });
     entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -110,37 +117,38 @@ async function discover(directory: string): Promise<string[]> {
       const path = join(dir, entry.name);
       // Never follow links, including links that could leave the supplied stage tree.
       if (entry.isDirectory()) await walk(path);
-      else if (entry.isFile() && /\.md$/i.test(entry.name)) files.push(path);
+      else if (entry.isFile() && /\.md$/i.test(entry.name)) stageFiles.push(path);
     }
   }
-  await walk(directory);
-  return files;
+  await walk(stagesDirectory);
+  return stageFiles;
 }
 
-export const loadPlan = (directory: string, cwd: string) =>
+export const loadPlan = (stageDirectory: string, cwd: string) =>
   Effect.tryPromise({
     try: async (): Promise<Plan> => {
-      const absolute = resolve(cwd, directory);
-      const paths = await discover(absolute);
-      if (!paths.length) throw new PassesError(`${directory}: no Markdown (.md) stages found`);
+      const absolute = resolve(cwd, stageDirectory);
+      const stageFiles = await discoverStageFiles(absolute);
+      if (!stageFiles.length)
+        throw new PassesError(`${stageDirectory}: no Markdown (.md) stages found`);
       const stages: Stage[] = [];
       const errors: string[] = [];
-      const names = new Map<string, string>();
-      const slugs = new Map<string, string>();
-      for (const path of paths) {
+      const stageNames = new Map<string, string>();
+      const stageSlugs = new Map<string, string>();
+      for (const path of stageFiles) {
         const file = relative(cwd, path) || path;
         try {
           const stage = parseStage(await readFile(path, "utf8"), file);
-          const duplicate = names.get(stage.name);
-          const collision = slugs.get(stage.slug);
+          const duplicate = stageNames.get(stage.name);
+          const collision = stageSlugs.get(stage.slug);
           if (duplicate)
             throw new PassesError(`${file}: name "${stage.name}" duplicates ${duplicate}`);
           if (collision)
             throw new PassesError(
               `${file}: name "${stage.name}" has slug "${stage.slug}", which collides with ${collision}`,
             );
-          names.set(stage.name, file);
-          slugs.set(stage.slug, file);
+          stageNames.set(stage.name, file);
+          stageSlugs.set(stage.slug, file);
           stages.push(stage);
         } catch (error) {
           errors.push(message(error));
