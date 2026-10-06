@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -656,6 +657,84 @@ describe("passes CLI acceptance", () => {
         false,
       );
       await expectFixtureStopped(ws);
+    },
+    timeout,
+  );
+
+  test.each(["SIGINT", "SIGTERM"] as const)(
+    "%s remains the exit status when another signal arrives during cleanup",
+    async (signal) => {
+      const ws = workspace();
+      stage(ws, "waiting.md", {
+        prompt: directive("waiting", { hold: true, ignoreTerm: true, spawnDescendant: true }),
+      });
+      stage(ws, "later.md", { step: 1, prompt: directive("later") });
+      const execution = launch(ws);
+      await waitFor(
+        () => events(ws).some((event) => event.kind === "descendant"),
+        "descendant readiness",
+      );
+      execution.child.kill(signal);
+      await waitFor(() => execution.stderr.includes("cancelling active stages"), "cancellation");
+      execution.child.kill(signal === "SIGINT" ? "SIGTERM" : "SIGINT");
+      const result = await execution.result;
+      expect(result.code).toBe(signal === "SIGINT" ? 130 : 143);
+      expect(result.stderr.match(/cancelling active stages/g)).toHaveLength(1);
+      expect(events(ws).some((event) => event.kind === "start" && event.id === "later")).toBe(
+        false,
+      );
+      await expectFixtureStopped(ws);
+    },
+    timeout,
+  );
+
+  test(
+    "a closed stdout pipe cancels stubborn stages and descendants",
+    async () => {
+      const ws = workspace();
+      const releaseFile = join(ws.root, "release");
+      stage(ws, "waiting.md", {
+        prompt: directive("waiting", { hold: true, ignoreTerm: true, spawnDescendant: true }),
+      });
+      stage(ws, "writer.md", { prompt: directive("writer", { releaseFile }) });
+      stage(ws, "later.md", { step: 1, prompt: directive("later") });
+      const child = spawn(
+        process.execPath,
+        [join(import.meta.dir, "../src/cli.ts"), "run", "stages"],
+        {
+          cwd: ws.cwd,
+          env: ws.env,
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      let stderr = "";
+      child.stderr.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+      child.stdout.resume();
+      const exited = new Promise<number | null>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", resolve);
+      });
+      try {
+        await waitFor(
+          () =>
+            events(ws).some((event) => event.kind === "descendant") &&
+            events(ws).some((event) => event.kind === "ready" && event.id === "writer"),
+          "both stages ready",
+        );
+        child.stdout.destroy();
+        writeFileSync(releaseFile, "release\n");
+        expect(await exited).toBe(143);
+        expect(stderr).toContain("SIGTERM: cancelling active stages");
+        expect(events(ws).some((event) => event.kind === "start" && event.id === "later")).toBe(
+          false,
+        );
+        await expectFixtureStopped(ws);
+      } finally {
+        child.kill("SIGKILL");
+        await exited;
+      }
     },
     timeout,
   );

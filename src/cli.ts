@@ -1,9 +1,5 @@
 #!/usr/bin/env bun
-import { Cause, Effect, Exit, Fiber } from "effect";
-import type * as FileSystemService from "effect/FileSystem";
-import type * as PathService from "effect/Path";
-import type * as StdioService from "effect/Stdio";
-import type { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
+import { Cause, Effect, Exit } from "effect";
 import { message, PassesError } from "./errors.ts";
 import { runCommand, nodeProcessLayer } from "./process.ts";
 import { createRunReporter, interruptNotice, terminal } from "./reporter.ts";
@@ -33,13 +29,7 @@ let reporter: Reporter = terminal;
 let runLog: RunReporter | undefined;
 let loggingFailure: PassesError | undefined;
 
-function main(
-  args: readonly string[],
-): Effect.Effect<
-  void,
-  PassesError,
-  ChildProcessSpawner | FileSystemService.FileSystem | PathService.Path | StdioService.Stdio
-> {
+function main(args: readonly string[]) {
   return Effect.scoped(
     Effect.gen(function* () {
       if (args.length === 1 && args[0] === "--help") {
@@ -114,9 +104,7 @@ function main(
         );
       const log = yield* createRunReporter(repository.stdout.trim(), verbose, (error) => {
         loggingFailure = error;
-        queueMicrotask(() => {
-          Effect.runFork(Fiber.interrupt(fiber));
-        });
+        queueMicrotask(() => interrupt());
       }).pipe(
         Effect.mapError((error) => new PassesError(`Could not create run log: ${message(error)}`)),
       );
@@ -146,12 +134,11 @@ function main(
 }
 
 let interrupted: NodeJS.Signals | undefined;
-const fiber = Effect.runFork(main(process.argv.slice(2)).pipe(Effect.provide(nodeProcessLayer)));
 const stop = (signal: NodeJS.Signals) => {
   if (interrupted) return;
   interrupted = signal;
   interruptNotice(`${signal}: cancelling active stages...`);
-  Effect.runFork(Fiber.interrupt(fiber));
+  interrupt();
 };
 const sigint = () => stop("SIGINT");
 const sigterm = () => stop("SIGTERM");
@@ -164,7 +151,13 @@ const outputError = (error: NodeJS.ErrnoException) => {
 };
 process.stdout.on("error", outputError);
 process.stderr.on("error", outputError);
-const exit = await Effect.runPromise(Fiber.await(fiber));
-process.removeListener("SIGINT", sigint);
-process.removeListener("SIGTERM", sigterm);
-if (Exit.isFailure(exit) && process.exitCode === undefined) process.exitCode = 1;
+const interrupt = Effect.runCallback(
+  main(process.argv.slice(2)).pipe(Effect.provide(nodeProcessLayer)),
+  {
+    onExit: (exit) => {
+      process.removeListener("SIGINT", sigint);
+      process.removeListener("SIGTERM", sigterm);
+      if (Exit.isFailure(exit) && process.exitCode === undefined) process.exitCode = 1;
+    },
+  },
+);
