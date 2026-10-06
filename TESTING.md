@@ -21,13 +21,13 @@ bun dist/passes.js validate stages
 
 ## Automated checks
 
-- 140 CLI behavior tests passing, zero failures
+- 145 CLI and repository-sync behavior tests passing, zero failures
 - Strict TypeScript typecheck passing
 - Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
 - Repository stage validation passing through the source and bundled CLI (8 stages, 8 layers)
 
-Tests invoke the documented CLI without importing implementation modules. They
+CLI tests invoke the documented CLI without importing implementation modules. They
 check exit codes, diagnostics, layer graphs, filesystem effects, and the argv and
 stdin received by a fake Codex executable at the external process boundary.
 Expected prompt text comes from the documented contract, independently of the
@@ -344,3 +344,30 @@ Verified on macOS with Bun 1.4.2: `bun run check` (typecheck, lint, formatting,
 `git diff --check` after the final source edits. The affected stage suite passed
 again (73 tests). Source and bundled CLI validation each reported eight stages
 in eight layers; final documentation formatting and diff checks passed.
+
+## Fewer repository-sync subprocesses
+
+Reviewed external operations in `src` and `scripts`, plus the vendored Effect
+`RequestResolver` and `batchN` contracts. Runtime model discovery already shares
+one catalog across all stages with a 100-entry page limit; pagination cursors
+depend on preceding responses. Stage discovery uses directory-entry types and
+reads each stage file once. No resolver was needed for the fixed pair of Git
+revisions: Git accepts both in one native request.
+
+Before → After: `git rev-list -n 1 TAG` plus `git rev-parse HEAD` →
+`git rev-parse TAG^{commit} HEAD`. The request always contains two revisions;
+results retain argument order and duplicate commit IDs. Explicit peeling handles
+annotated tags. Invalid revisions and mismatched checkout commits still fail,
+and sync still fetches on every invocation.
+
+Measured the existing-repository path using temporary script copies and a Git
+wrapper: six Git invocations before, five after; final revision verification
+falls from two subprocesses to one. Five regression cases use real Git for
+lightweight/annotated tags, checkout, mismatched HEAD, unresolved revisions, and
+a moved tag across repeated runs. Fetch is stubbed, and the failure fixtures can
+simulate a checkout that falsely reports success. Tests make no network requests.
+
+Checks run on macOS with Bun 1.4.2: the five focused tests before and after the
+change; `bun run check` (typecheck, lint, formatting, 145 passing tests, and build);
+and a separate strict TypeScript check of `scripts/sync-repos.ts`, which the
+project tsconfig excludes. No timing improvement is claimed.

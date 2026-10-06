@@ -172,9 +172,10 @@ async function syncRepository(
     }
   }
 
-  const expectedCommit = await runGit(destination, "rev-list", "-n", "1", tag);
-  const actualCommit = await runGit(destination, "rev-parse", "HEAD");
-  if (actualCommit !== expectedCommit) {
+  // Resolve this fixed pair in argument order, peeling annotated tags to their commit.
+  const commits = (await runGit(destination, "rev-parse", `${tag}^{commit}`, "HEAD")).split("\n");
+  const [expectedCommit, actualCommit] = commits;
+  if (commits.length !== 2 || !actualCommit || actualCommit !== expectedCommit) {
     throw new Error(`repos/${repository.directory} did not check out ${tag}`);
   }
 
