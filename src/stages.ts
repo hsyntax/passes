@@ -118,6 +118,7 @@ const discoverStageFiles = Effect.fn((stagesDirectory: string) =>
     const stageFiles: string[] = [];
     const walk: (dir: string) => Effect.Effect<void, unknown, never> = Effect.fn((dir: string) =>
       Effect.gen(function* () {
+        // Dirent flags let this walk skip symlinks; FileSystem.readDirectory returns names only.
         const entries = yield* Effect.tryPromise({
           try: () => readdir(dir, { withFileTypes: true }),
           catch: (error) => error,

@@ -1,6 +1,6 @@
-import { Effect } from "effect";
+import { Effect, Fiber, Stream } from "effect";
 import { execArgs, preflight, stagePrompt } from "./codex.ts";
-import { PassesError } from "./errors.ts";
+import { message, PassesError } from "./errors.ts";
 import { collectProcess, createLineReporter, startProcess, waitForExit } from "./process.ts";
 import type { Reporter } from "./reporter.ts";
 import type { Plan, Stage } from "./stages.ts";
@@ -11,32 +11,32 @@ const runStage = Effect.fn("Runner.runStage")(
   (stage: Stage, cwd: string, reporter: Reporter, scopeOverride?: string, fast = false) =>
     Effect.scoped(
       Effect.gen(function* () {
-        yield* Effect.sync(() => reporter.out(`${stage.name}: starting`));
+        yield* reporter.out(`${stage.name}: starting`);
         const stdout = createLineReporter((line) => reporter.detail(`[${stage.name}] ${line}`));
         const stderr = createLineReporter((line) =>
           reporter.detail(`[${stage.name} stderr] ${line}`, "stderr"),
         );
         // Register first so process termination/draining runs before the final line flush.
         yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            stdout.end();
-            stderr.end();
-          }),
+          Effect.all([stdout.end(), stderr.end()], { discard: true }).pipe(
+            Effect.catch(() => Effect.void),
+          ),
         );
-        const proc = yield* startProcess("codex", execArgs(stage, cwd, fast), cwd);
-        proc.child.stdout.on("data", stdout.data);
-        proc.child.stderr.on("data", stderr.data);
-        proc.child.stdin.end(stagePrompt(stage, scopeOverride));
+        const proc = yield* startProcess(
+          "codex",
+          execArgs(stage, cwd, fast),
+          cwd,
+          stagePrompt(stage, scopeOverride),
+        );
+        const stdoutFiber = yield* Effect.forkScoped(
+          Stream.decodeText(proc.stdout).pipe(Stream.runForEach((chunk) => stdout.data(chunk))),
+        );
+        const stderrFiber = yield* Effect.forkScoped(
+          Stream.decodeText(proc.stderr).pipe(Stream.runForEach((chunk) => stderr.data(chunk))),
+        );
         const processExit = yield* waitForExit(proc);
-        if (processExit.code !== 0)
-          return yield* Effect.fail(
-            new PassesError(
-              `${stage.name} (${stage.file}): failed with ${processExit.signal ? `signal ${processExit.signal}` : `exit code ${processExit.code}`}`,
-            ),
-          );
-        // Drain final output, but never hang forever on a descendant holding the pipe open.
-        yield* Effect.promise(() => proc.closed).pipe(
-          Effect.timeout(1_000),
+        yield* Effect.all([Fiber.join(stdoutFiber), Fiber.join(stderrFiber)]).pipe(
+          Effect.timeout("1 second"),
           Effect.mapError(
             () =>
               new PassesError(
@@ -44,13 +44,17 @@ const runStage = Effect.fn("Runner.runStage")(
               ),
           ),
         );
-        stdout.end();
-        stderr.end();
-        yield* Effect.sync(() => reporter.out(`${stage.name}: completed`));
+        if (processExit !== 0)
+          return yield* Effect.fail(
+            new PassesError(`${stage.name} (${stage.file}): failed with exit code ${processExit}`),
+          );
+        yield* stdout.end();
+        yield* stderr.end();
+        yield* reporter.out(`${stage.name}: completed`);
       }),
     ).pipe(
-      Effect.tapError((error) => Effect.sync(() => reporter.err(error.message))),
-      Effect.onInterrupt(() => Effect.sync(() => reporter.err(`${stage.name}: cancelled`))),
+      Effect.tapError((error) => reporter.err(message(error))),
+      Effect.onInterrupt(() => reporter.err(`${stage.name}: cancelled`)),
     ),
 );
 
@@ -61,27 +65,29 @@ const pushCommits = Effect.fn("Runner.pushCommits")((cwd: string, reporter: Repo
       if (remotes.code !== 0)
         return yield* Effect.fail(new PassesError(`Could not list Git remotes: ${remotes.stderr}`));
       if (!remotes.stdout.trim()) {
-        yield* Effect.sync(() => reporter.out("No Git remote configured; skipping push."));
+        yield* reporter.out("No Git remote configured; skipping push.");
         return;
       }
-      yield* Effect.sync(() => reporter.out("All stages completed; pushing commits..."));
+      yield* reporter.out("All stages completed; pushing commits...");
       const stdout = createLineReporter((line) => reporter.detail(`[git push] ${line}`));
       const stderr = createLineReporter((line) =>
         reporter.detail(`[git push stderr] ${line}`, "stderr"),
       );
       yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          stdout.end();
-          stderr.end();
-        }),
+        Effect.all([stdout.end(), stderr.end()], { discard: true }).pipe(
+          Effect.catch(() => Effect.void),
+        ),
       );
       const proc = yield* startProcess("git", ["-c", "push.autoSetupRemote=true", "push"], cwd);
-      proc.child.stdout.on("data", stdout.data);
-      proc.child.stderr.on("data", stderr.data);
-      proc.child.stdin.end();
+      const stdoutFiber = yield* Effect.forkScoped(
+        Stream.decodeText(proc.stdout).pipe(Stream.runForEach((chunk) => stdout.data(chunk))),
+      );
+      const stderrFiber = yield* Effect.forkScoped(
+        Stream.decodeText(proc.stderr).pipe(Stream.runForEach((chunk) => stderr.data(chunk))),
+      );
       const processExit = yield* waitForExit(proc);
-      yield* Effect.promise(() => proc.closed).pipe(
-        Effect.timeout(1_000),
+      yield* Effect.all([Fiber.join(stdoutFiber), Fiber.join(stderrFiber)]).pipe(
+        Effect.timeout("1 second"),
         Effect.mapError(
           () =>
             new PassesError(
@@ -89,13 +95,13 @@ const pushCommits = Effect.fn("Runner.pushCommits")((cwd: string, reporter: Repo
             ),
         ),
       );
-      if (processExit.code !== 0)
+      if (processExit !== 0)
         return yield* Effect.fail(
           new PassesError(
-            `git push failed with ${processExit.signal ? `signal ${processExit.signal}` : `exit code ${processExit.code}`}; local commits are retained.`,
+            `git push failed with exit code ${processExit}; local commits are retained.`,
           ),
         );
-      yield* Effect.sync(() => reporter.out("Git push completed."));
+      yield* reporter.out("Git push completed.");
     }),
   ),
 );
@@ -116,25 +122,19 @@ export const runPlan = Effect.fn("Runner.runPlan")(
       );
       if (fast) {
         for (const model of new Set(plan.stages.map((stage) => stage.model))) {
-          yield* Effect.sync(() =>
-            reporter.out(
-              fastModels.has(model)
-                ? `${model}: fast mode requested.`
-                : `${model}: fast mode not advertised; using Codex defaults.`,
-            ),
+          yield* reporter.out(
+            fastModels.has(model)
+              ? `${model}: fast mode requested.`
+              : `${model}: fast mode not advertised; using Codex defaults.`,
           );
         }
       }
-      yield* Effect.sync(() =>
-        reporter.out(
-          "Model/effort catalog check passed; live access and quota are checked by Codex during execution.",
-        ),
+      yield* reporter.out(
+        "Model/effort catalog check passed; live access and quota are checked by Codex during execution.",
       );
       for (const layer of plan.layers) {
-        yield* Effect.sync(() =>
-          reporter.out(
-            `Step ${layer.step}: starting ${layer.stages.length} stage${layer.stages.length === 1 ? "" : "s concurrently"}`,
-          ),
+        yield* reporter.out(
+          `Step ${layer.step}: starting ${layer.stages.length} stage${layer.stages.length === 1 ? "" : "s concurrently"}`,
         );
         // Effect interrupts sibling fibers and waits for their scoped process cleanup on failure.
         yield* Effect.forEach(
@@ -148,12 +148,10 @@ export const runPlan = Effect.fn("Runner.runPlan")(
         );
       }
       const head = yield* collectProcess("git", ["log", "-1", "--format=%h %s"], plan.cwd);
-      yield* Effect.sync(() =>
-        reporter.out(
-          head.code === 0 ? `Latest commit: ${head.stdout.trim()}` : "No commit available.",
-        ),
+      yield* reporter.out(
+        head.code === 0 ? `Latest commit: ${head.stdout.trim()}` : "No commit available.",
       );
       yield* pushCommits(plan.cwd, reporter);
-      yield* Effect.sync(() => reporter.out(`Finished: ${plan.stages.length} stages completed`));
+      yield* reporter.out(`Finished: ${plan.stages.length} stages completed`);
     }),
 );

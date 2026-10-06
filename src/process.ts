@@ -1,150 +1,115 @@
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { StringDecoder } from "node:string_decoder";
-import { Effect } from "effect";
+import { layer as childProcessLayer } from "@effect/platform-node-shared/NodeChildProcessSpawner";
+import { layer as fileSystemLayer } from "@effect/platform-node-shared/NodeFileSystem";
+import { layer as pathLayer } from "@effect/platform-node-shared/NodePath";
+import { layer as stdioLayer } from "@effect/platform-node-shared/NodeStdio";
+import { Effect, Fiber, Layer, Stream } from "effect";
+import * as ChildProcess from "effect/process/ChildProcess";
+import type { ChildProcessHandle } from "effect/process/ChildProcessSpawner";
+import type * as PlatformError from "effect/PlatformError";
 import { message, PassesError } from "./errors.ts";
 
-const GRACE_MS = 500;
-export interface ProcessExit {
-  readonly code: number | null;
-  readonly signal: NodeJS.Signals | null;
-}
-export interface ManagedProcess {
-  readonly child: ChildProcessWithoutNullStreams;
-  readonly exit: Promise<ProcessExit>;
-  readonly closed: Promise<void>;
-}
+const FORCE_KILL_AFTER = "500 millis";
 
-function signalGroup(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
-  if (!child.pid) return;
-  try {
-    // Each child has a dedicated POSIX process group, so ordinary descendants are cancelled too.
-    process.kill(-child.pid, signal);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-  }
-}
-function groupExists(child: ChildProcessWithoutNullStreams): boolean {
-  if (!child.pid) return false;
-  try {
-    process.kill(-child.pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-}
+export const nodeProcessLayer = childProcessLayer.pipe(
+  Layer.provideMerge(Layer.mergeAll(fileSystemLayer, pathLayer, stdioLayer)),
+);
 
-export const startProcess = Effect.fn((command: string, args: readonly string[], cwd: string) =>
-  Effect.acquireRelease(
-    Effect.try({
-      try: (): ManagedProcess => {
-        const child = spawn(command, [...args], {
-          cwd,
-          detached: true,
-          stdio: ["pipe", "pipe", "pipe"],
-          shell: false,
-        });
-        // Never leave a rejected promise unobserved while setup is still attaching consumers.
-        const exit = new Promise<ProcessExit>((resolve, reject) => {
-          child.once("error", (error) =>
-            reject(new PassesError(`Could not start ${command}: ${message(error)}`)),
-          );
-          child.once("exit", (code, signal) => resolve({ code, signal }));
-        });
-        void exit.catch(() => {});
-        const closed = new Promise<void>((resolve) => {
-          child.once("close", () => resolve());
-        });
-        // EPIPE during cancellation or early CLI failure must not crash the parent.
-        child.stdin.on("error", () => {});
-        return { child, exit, closed };
-      },
-      catch: (error) => new PassesError(`Could not start ${command}: ${message(error)}`),
-    }),
-    ({ child, exit, closed }) =>
-      Effect.gen(function* () {
-        child.stdin.destroy();
-        yield* Effect.ensuring(
-          Effect.gen(function* () {
-            if (groupExists(child)) {
-              signalGroup(child, "SIGTERM");
-              const until = Date.now() + GRACE_MS;
-              while (groupExists(child) && Date.now() < until) yield* Effect.sleep(20);
-              if (groupExists(child)) signalGroup(child, "SIGKILL");
-            }
-            yield* Effect.promise(() => Promise.all([exit.catch(() => undefined), closed])).pipe(
-              Effect.timeoutOption(1_000),
-              Effect.asVoid,
-            );
-          }),
-          Effect.sync(() => {
-            child.stdout.destroy();
-            child.stderr.destroy();
-          }),
-        );
+export type ManagedProcess = ChildProcessHandle;
+
+export const startProcess = Effect.fn("Process.start")(
+  (
+    command: string,
+    args: readonly string[],
+    cwd: string,
+    input?: string | Stream.Stream<Uint8Array, PlatformError.PlatformError>,
+  ) =>
+    ChildProcess.make(command, [...args], {
+      cwd,
+      detached: true,
+      forceKillAfter: FORCE_KILL_AFTER,
+      stdin:
+        input === undefined
+          ? "ignore"
+          : typeof input === "string"
+            ? Stream.make(new TextEncoder().encode(input))
+            : input,
+      stdout: "pipe",
+      stderr: "pipe",
+    }).pipe(
+      Effect.mapError((error) => new PassesError(`Could not start ${command}: ${message(error)}`)),
+    ),
+);
+
+export const waitForExit = Effect.fn("Process.waitForExit")((proc: ManagedProcess) =>
+  proc.exitCode.pipe(Effect.mapError((error) => new PassesError(message(error)))),
+);
+
+function readTail<E, R>(stream: Stream.Stream<Uint8Array, E, R>, limit: number) {
+  let contents = "";
+  const collect = Stream.decodeText(stream).pipe(
+    Stream.runForEach((chunk) =>
+      Effect.sync(() => {
+        contents = (contents + chunk).slice(-limit);
       }),
-  ),
+    ),
+    Effect.asVoid,
+  );
+  return { collect, contents: () => contents };
+}
+
+export const collectProcess = Effect.fn("Process.collect")(
+  (command: string, args: readonly string[], cwd: string) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const proc = yield* startProcess(command, args, cwd);
+        const stdout = readTail(proc.stdout, 64_000);
+        const stderr = readTail(proc.stderr, 8_000);
+        const stdoutFiber = yield* Effect.forkScoped(stdout.collect);
+        const stderrFiber = yield* Effect.forkScoped(stderr.collect);
+        const code = yield* waitForExit(proc);
+        // Descendants can inherit pipes after the leader exits. Bound the drain;
+        // scope cleanup then terminates the group through the platform adapter.
+        yield* Effect.all([Fiber.join(stdoutFiber), Fiber.join(stderrFiber)]).pipe(
+          Effect.timeout("1 second"),
+          Effect.mapError(
+            (error) =>
+              new PassesError(`${command}: ${message(error)} while draining child process output`),
+          ),
+        );
+        return { code, signal: null, stdout: stdout.contents(), stderr: stderr.contents() };
+      }),
+    ).pipe(
+      Effect.timeout("10 seconds"),
+      Effect.mapError((error) => new PassesError(`${command}: ${message(error)}`)),
+    ),
 );
 
-export const waitForExit = Effect.fn((proc: ManagedProcess) =>
-  Effect.tryPromise({
-    try: () => proc.exit,
-    catch: (error) => (error instanceof PassesError ? error : new PassesError(message(error))),
-  }),
-);
-
-export const collectProcess = Effect.fn((command: string, args: readonly string[], cwd: string) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const proc = yield* startProcess(command, args, cwd);
-      let stdout = "";
-      let stderr = "";
-      proc.child.stdout.on("data", (data: Buffer) => {
-        stdout = (stdout + data.toString()).slice(-64_000);
-      });
-      proc.child.stderr.on("data", (data: Buffer) => {
-        stderr = (stderr + data.toString()).slice(-8_000);
-      });
-      proc.child.stdin.end();
-      const processExit = yield* waitForExit(proc);
-      // exit can precede final pipe data; close marks both streams drained.
-      yield* Effect.promise(() => proc.closed);
-      return { ...processExit, stdout, stderr };
-    }),
-  ).pipe(
-    Effect.timeout(10_000),
-    Effect.mapError((error) => new PassesError(`${command}: ${message(error)}`)),
-  ),
-);
-
-/** Prefix streaming output without retaining unbounded transcripts or splitting UTF-8. */
-export function createLineReporter(write: (line: string) => void) {
-  const decoder = new StringDecoder("utf8");
+/** Prefix streamed process output while bounding the memory used for a line. */
+export function createLineReporter<E, R>(write: (line: string) => Effect.Effect<void, E, R>) {
   let pending = "";
-  function flush(full: boolean): void {
+  function flush(full: boolean): Effect.Effect<void, E, R> {
+    const lines: string[] = [];
     let newline = pending.indexOf("\n");
     while (newline >= 0) {
-      write(pending.slice(0, newline).replace(/\r$/, ""));
+      lines.push(pending.slice(0, newline).replace(/\r$/, ""));
       pending = pending.slice(newline + 1);
       newline = pending.indexOf("\n");
     }
-    // A tool can emit arbitrarily long lines. Keep the memory bound predictable.
     while (pending.length > 8_192) {
-      write(pending.slice(0, 8_192));
+      lines.push(pending.slice(0, 8_192));
       pending = pending.slice(8_192);
     }
     if (full && pending) {
-      write(pending);
+      lines.push(pending);
       pending = "";
     }
+    return Effect.forEach(lines, write, { discard: true });
   }
   return {
-    data: (chunk: Buffer) => {
-      pending += decoder.write(chunk);
-      flush(false);
+    data: (chunk: string): Effect.Effect<void, E, R> => {
+      pending += chunk;
+      return flush(false);
     },
-    end: () => {
-      pending += decoder.end();
-      flush(true);
-    },
+    end: (): Effect.Effect<void, E, R> => flush(true),
   };
 }
