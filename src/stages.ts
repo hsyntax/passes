@@ -1,7 +1,5 @@
-import { layer as fileSystemLayer } from "@effect/platform-node-shared/NodeFileSystem";
 import { readdir } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
-import { Effect, FileSystem, Schema } from "effect";
+import { Effect, FileSystem, Path, Schema } from "effect";
 import { parseDocument } from "yaml";
 import { message, PassesError } from "./errors.ts";
 
@@ -110,6 +108,7 @@ export function parseStage(source: string, file: string): Stage {
 const discoverStageFiles = Effect.fn((stagesDirectory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const directory = yield* fs
       .stat(stagesDirectory)
       .pipe(Effect.mapError((error) => error.cause ?? error));
@@ -125,10 +124,10 @@ const discoverStageFiles = Effect.fn((stagesDirectory: string) =>
         });
         entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
         for (const entry of entries) {
-          const path = join(dir, entry.name);
+          const entryPath = path.join(dir, entry.name);
           // Never follow links, including links that could leave the supplied stage tree.
-          if (entry.isDirectory()) yield* walk(path);
-          else if (entry.isFile() && /\.md$/i.test(entry.name)) stageFiles.push(path);
+          if (entry.isDirectory()) yield* walk(entryPath);
+          else if (entry.isFile() && /\.md$/i.test(entry.name)) stageFiles.push(entryPath);
         }
       }),
     );
@@ -140,7 +139,8 @@ const discoverStageFiles = Effect.fn((stagesDirectory: string) =>
 export const loadPlan = Effect.fn("Stages.loadPlan")((stageDirectory: string, cwd: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const absolute = resolve(cwd, stageDirectory);
+    const path = yield* Path.Path;
+    const absolute = path.resolve(cwd, stageDirectory);
     const stageFiles = yield* discoverStageFiles(absolute);
     if (!stageFiles.length)
       return yield* Effect.fail(
@@ -150,10 +150,10 @@ export const loadPlan = Effect.fn("Stages.loadPlan")((stageDirectory: string, cw
     const errors: string[] = [];
     const stageNames = new Map<string, string>();
     const stageSlugs = new Map<string, string>();
-    for (const path of stageFiles) {
-      const file = relative(cwd, path) || path;
+    for (const stagePath of stageFiles) {
+      const file = path.relative(cwd, stagePath) || stagePath;
       try {
-        const source = yield* Effect.match(fs.readFile(path), {
+        const source = yield* Effect.match(fs.readFile(stagePath), {
           onFailure: (error) => {
             errors.push(message(error.cause ?? error));
             return undefined;
@@ -198,7 +198,6 @@ export const loadPlan = Effect.fn("Stages.loadPlan")((stageDirectory: string, cw
         .map(([step, layerStages]) => ({ step, stages: layerStages })),
     };
   }).pipe(
-    Effect.provide(fileSystemLayer),
     Effect.mapError((error) =>
       error instanceof PassesError
         ? error
