@@ -1,6 +1,8 @@
 # Verification
 
-Verified on Linux and macOS (Darwin arm64) with Bun 1.4.2. The macOS test fixture
+The original baseline was verified on Linux and macOS (Darwin arm64) with Bun 1.4.2.
+The stage additions and commit-prompt changes were verified on Linux with Bun 1.4.2;
+the updated suite has not been rerun on macOS. The macOS test fixture
 canonicalizes temporary directories with `realpathSync` so `/var` and
 `/private/var` aliases compare correctly.
 
@@ -12,19 +14,19 @@ To repeat installation and verification from the project directory:
 ```sh
 bun install --frozen-lockfile
 bun run check
-bun src/cli.ts validate examples/stages
-bun dist/passes.js validate examples/stages
+bun src/cli.ts validate stages
+bun dist/passes.js validate stages
 ```
 
 ## Automated checks
 
-- 65 tests passing, 205 assertions, zero failures
+- 70 tests passing, 227 assertions, zero failures
 - Strict TypeScript typecheck passing
 - Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
-- Example stage validation passing through the source and bundled CLI
+- Repository stage validation passing through the source and bundled CLI (4 stages, 4 layers)
 
-The 43 parser/unit tests cover required fields, unknown fields, malformed and
+The 48 parser/unit tests cover required fields, unknown fields, malformed and
 ambiguous YAML, duplicate YAML keys, invalid numeric values, quoted numbers,
 control characters, BOM/CRLF, literal prompt preservation, empty prompts,
 recursive deterministic discovery, symlink cycles, name/slug collisions, numeric
@@ -36,7 +38,10 @@ stdin preservation, nested cwd, dirty file preservation, stdout/stderr labels,
 nonzero failure stopping advancement, sibling and descendant cancellation,
 TERM-ignoring subprocesses, exact SIGINT/SIGTERM exit codes, unsupported models
 and efforts (including a later layer), old CLI versions, malformed catalogs,
-pagination, omitted/repeated cursors, and interrupted preflight cleanup.
+pagination, omitted/repeated cursors, and interrupted preflight cleanup. Prompt
+checks verify that the original Markdown is preserved as a prefix and the standard
+commit instructions are appended exactly once to every stage invocation. Tests do
+not rely on a real model to interpret those instructions or create a commit.
 
 ## Codex checks
 

@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
-import { execArgs } from "../src/codex.ts";
+import { execArgs, stagePrompt } from "../src/codex.ts";
 import { lineReporter } from "../src/process.ts";
 import { loadPlan, parseStage, renderGraph, slugify } from "../src/stages.ts";
 
@@ -189,6 +189,26 @@ test("argv preserves quoted values as one argument and has no shell or persisten
   expect(args).toContain("--ephemeral");
   expect(args).not.toContain("--full-auto");
   expect(args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+});
+
+describe("stage execution prompt", () => {
+  const instructions =
+    "After completing the stage, inspect your changes and commit them. Use a short subject describing the outcome. In the body, explain why and show a compact Before → After sketch when useful. Record only checks actually run. Skip empty commits.";
+
+  test.each([
+    "Do the work.",
+    "Do the work.\n",
+    "\n# Prompt\n${not_a_variable}\n---\n```sh\nprintf '%s' $(touch nope)\n```\n",
+    "# Windows line endings\r\nPreserve this body.\r\n",
+    "# Unicode 🌍\nBefore → After\n日本語\n\n",
+  ])("preserves the literal body and appends the exact commit instructions: %j", (body) => {
+    const stage = parseStage(document(header, body), "prompt.md");
+    const original = stage.prompt;
+    const expected = `${body}\n\n${instructions}\n`;
+    expect(stagePrompt(stage)).toBe(expected);
+    expect(stagePrompt(stage)).toBe(expected);
+    expect(stage.prompt).toBe(original);
+  });
 });
 
 test("line reporter preserves split UTF-8 and flushes partial bounded lines", () => {

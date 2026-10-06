@@ -18,6 +18,8 @@ const fixture = join(import.meta.dir, "fixtures/codex.ts");
 const temporary: Workspace[] = [];
 const runners: ReturnType<typeof Bun.spawn>[] = [];
 const timeout = 20_000;
+const commitInstructions =
+  "After completing the stage, inspect your changes and commit them. Use a short subject describing the outcome. In the body, explain why and show a compact Before → After sketch when useful. Record only checks actually run. Skip empty commits.";
 
 interface Event {
   kind: string;
@@ -401,6 +403,12 @@ describe("passes CLI acceptance", () => {
         "initialized",
         "model/list",
       ]);
+      const starts = log.filter((event) => event.kind === "start");
+      expect(starts).toHaveLength(3);
+      for (const start of starts) {
+        expect(start.prompt?.endsWith(`\n\n${commitInstructions}\n`)).toBe(true);
+        expect(start.prompt?.split(commitInstructions)).toHaveLength(2);
+      }
       await expectFixtureStopped(ws);
     },
     timeout,
@@ -424,7 +432,7 @@ describe("passes CLI acceptance", () => {
       expect(result.code).toBe(0);
       const start = events(ws).find((event) => event.kind === "start");
       expect(start?.cwd).toBe(ws.cwd);
-      expect(start?.prompt).toBe(prompt);
+      expect(start?.prompt).toBe(`${prompt}\n\n${commitInstructions}\n`);
       expect(start?.args).toContain(model);
       const args = start?.args ?? [];
       const valueAfter = (flag: string) => args[args.indexOf(flag) + 1];

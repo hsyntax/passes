@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { execArgs, preflight } from "./codex.ts";
+import { execArgs, preflight, stagePrompt } from "./codex.ts";
 import { PassesError } from "./errors.ts";
 import { lineReporter, startProcess, waitForExit } from "./process.ts";
 import type { Plan, Stage } from "./stages.ts";
@@ -25,7 +25,7 @@ function runStage(stage: Stage, cwd: string, reporter: Reporter) {
       const proc = yield* startProcess("codex", execArgs(stage, cwd), cwd);
       proc.child.stdout.on("data", stdout.data);
       proc.child.stderr.on("data", stderr.data);
-      proc.child.stdin.end(stage.prompt);
+      proc.child.stdin.end(stagePrompt(stage));
       const result = yield* waitForExit(proc);
       if (result.code !== 0)
         return yield* Effect.fail(

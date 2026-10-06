@@ -72,7 +72,8 @@ All four frontmatter fields are required:
 - `model`: nonempty string, passed exactly to Codex
 - `reasoning_effort`: nonempty string, passed exactly through Codex configuration
 
-The Markdown body must be nonempty and is sent unchanged over stdin. There are no
+The Markdown body must be nonempty and is preserved verbatim at the start of stdin,
+followed by the standard commit instructions below. There are no
 prompt variables, identifiers to configure, outputs, or artifact handoffs.
 Unknown fields and YAML aliases/tags are rejected. Strings are trimmed and may
 not contain embedded control/format characters. Names need a letter or number;
@@ -135,6 +136,15 @@ logs, artifacts, or output directories. Codex may still perform its normal local
 configuration/cache operations. Stdout and stderr are streamed separately with
 stage labels; partial lines are flushed on completion/cancellation.
 
+Every stage prompt ends with these instructions:
+
+> After completing the stage, inspect your changes and commit them. Use a short subject describing the outcome. In the body, explain why and show a compact Before → After sketch when useful. Record only checks actually run. Skip empty commits.
+
+The model writes the commit message and performs the commit. This is an instruction,
+not a runner-enforced guarantee: the runner does not stage files, create commits,
+verify commit messages, or require a clean checkout. A successful process exit does
+not prove that a commit was created. Review the resulting diff and Git history.
+
 Effect controls concurrent fibers, sequential barriers, scoped process resources,
 timeouts, and interruption. A failed stage prevents later layers from starting
 and interrupts its siblings. SIGINT/SIGTERM interrupt all active work. Dedicated
@@ -154,9 +164,10 @@ appear to concern different files. There is no edit isolation. Give overlapping
 work different steps. The runner does not silently serialize a layer.
 
 The runner does not create worktrees, fetch PRs, switch branches, commit, stash,
-reset, or clean files. Existing changes are retained on success, failure, and
-cancellation. Stage instructions still determine what Codex edits; review them
-before execution and review resulting changes afterward. No mandatory review
+reset, or clean files. It does not discard existing changes on success, failure, or
+cancellation. Codex is instructed to commit at the end of each stage, and stage
+instructions determine what Codex edits or commits; review them before execution
+and review resulting changes afterward. No mandatory review
 stage or automatic rollback is imposed.
 
 ## Development
