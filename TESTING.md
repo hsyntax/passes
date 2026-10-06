@@ -25,7 +25,7 @@ bun dist/passes.js validate stages
 - Strict TypeScript typecheck passing
 - Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
-- Repository stage validation passing through the source and bundled CLI (6 stages, 6 layers)
+- Repository stage validation passing through the source and bundled CLI (7 stages, 7 layers)
 
 Tests invoke the documented CLI without importing implementation modules. They
 check exit codes, diagnostics, layer graphs, filesystem effects, and the argv and
@@ -94,6 +94,15 @@ pushed before stage execution. The concurrency check also passed with reversed
 stage scheduling order. Production sources were untouched by these probes.
 
 ## Stage guidance verification
+
+The ecosystem-package stage runs before boundary isolation and uses `gpt-6.1-sol`
+with high reasoning. It starts with the full vendored ecosystem package tree,
+including manifests, source, documentation, and examples. It searches beyond platform packages for integrations that
+simplify implementation or reduce maintained code, verifies compatibility, and
+preserves behavior. The boundary and composition stages retain suitable adopted
+integrations. Source and bundled validation confirm seven sequential layers;
+this prompt change was not evaluated with a live model run. Fast mode is unset
+because the runner has no per-stage setting for it.
 
 The boundary stage prefers existing Effect integrations and otherwise the smallest
 external adapter. It distinguishes Effect interruption from actual SDK abort support

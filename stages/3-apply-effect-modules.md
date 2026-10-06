@@ -1,6 +1,6 @@
 ---
 name: Apply Effect modules
-step: 2
+step: 3
 model: gpt-6-luna
 reasoning_effort: xhigh
 ---
@@ -8,6 +8,7 @@ reasoning_effort: xhigh
 Apply existing Effect functions, modules, and compositions where they simplify the implementation, make correctness easier to establish, or improve measured performance. Preserve observable behavior, including errors, interruption, concurrency, and resource lifetimes.
 
 - Use existing functions directly; avoid unnecessary wrappers or aliases.
+- Build on suitable Effect packages and services already adopted; do not replace them with custom adapters or wrappers around lower-level APIs.
 - Avoid hoisting a method used only once when a direct module call is clearer.
 - Avoid premature abstractions; do not introduce a deduplication helper before a third clear repetition.
 - Remove abstractions whose indirection costs more readability than the duplication they save.

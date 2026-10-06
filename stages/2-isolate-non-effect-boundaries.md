@@ -1,13 +1,13 @@
 ---
 name: Isolate non-Effect boundaries
-step: 1
+step: 2
 model: gpt-6-luna
 reasoning_effort: high
 ---
 
 Keep core execution in Effect; isolate non-Effect SDK and API boundaries.
 
-- Prefer an existing Effect integration over a custom adapter.
+- Check existing Effect ecosystem packages and integrations before introducing a custom adapter. Preserve suitable integrations adopted by the preceding package-adoption pass; do not replace them with wrappers around raw APIs.
 - Otherwise wrap the smallest external operation, preserving errors, interruption, and resource cleanup.
 - Cancellation reaches the external operation only when its SDK supports abort and the adapter wires that support; do not imply that wrapping a Promise makes it cancellable.
 - Minimize internal `runPromise` calls and nested runtime exits. Retain genuine application entrypoints and required Promise-facing integrations.

@@ -1,6 +1,6 @@
 ---
 name: Align domain names
-step: 4
+step: 5
 model: gpt-6-luna
 reasoning_effort: high
 ---

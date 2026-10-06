@@ -1,6 +1,6 @@
 ---
 name: Choose Effect function constructors
-step: 5
+step: 6
 model: gpt-6-luna
 reasoning_effort: high
 ---
