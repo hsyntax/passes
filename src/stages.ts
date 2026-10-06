@@ -40,18 +40,17 @@ export interface Stage {
   readonly prompt: string;
   readonly file: string;
 }
-export interface Layer {
+interface Layer {
   readonly step: number;
   readonly stages: readonly Stage[];
 }
 export interface Plan {
   readonly invocationDirectory: string;
-  readonly stagesDirectory: string;
   readonly stages: readonly Stage[];
   readonly layers: readonly Layer[];
 }
 
-export const stageSlug = (stageName: string): string =>
+const stageSlug = (stageName: string): string =>
   stageName
     .normalize("NFKD")
     .replace(/\p{M}/gu, "")
@@ -59,7 +58,7 @@ export const stageSlug = (stageName: string): string =>
     .replace(/[^\p{L}\p{N}]+/gu, "-")
     .replace(/^-|-$/g, "");
 
-export const parseStage = Effect.fn(function* (source: string, file: string) {
+const parseStage = Effect.fn(function* (source: string, file: string) {
   const match = /^\uFEFF?---[\t ]*\r?\n([\s\S]*?)^---[\t ]*\r?$(?:\n|$)([\s\S]*)/m.exec(source);
   // The multiline regexp allows the closing fence to anchor; enforce opening at byte zero.
   if (!match || match.index !== 0) {
@@ -68,7 +67,7 @@ export const parseStage = Effect.fn(function* (source: string, file: string) {
     );
   }
   const yaml = yield* Effect.try({
-    try: () => parseDocument(match[1] ?? "", { uniqueKeys: true, strict: true, schema: "core" }),
+    try: () => parseDocument(match[1]!, { uniqueKeys: true, strict: true, schema: "core" }),
     catch: (cause) => new PassesError(`${file}: YAML: ${message(cause)}`, { cause }),
   });
   if (yaml.errors.length || yaml.warnings.length) {
@@ -106,7 +105,7 @@ export const parseStage = Effect.fn(function* (source: string, file: string) {
   if (!Number.isSafeInteger(stageFrontmatter.step)) {
     return yield* Effect.fail(new PassesError(`${file}: step must be a nonnegative safe integer`));
   }
-  const prompt = match[2] ?? "";
+  const prompt = match[2]!;
   if (!prompt.trim())
     return yield* Effect.fail(new PassesError(`${file}: prompt body must not be empty`));
   if (prompt.includes("\0"))
@@ -212,7 +211,6 @@ export const loadPlan = Effect.fn("Stages.loadPlan")(
       }
       return {
         invocationDirectory,
-        stagesDirectory: absoluteStagesDirectory,
         stages,
         layers: [...layersByStep]
           .sort(([left], [right]) => left - right)

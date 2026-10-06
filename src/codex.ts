@@ -15,7 +15,7 @@ const ModelCatalogPage = Schema.Struct({
   data: Schema.Array(ModelCatalogEntry),
   nextCursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
-export type CatalogModel = typeof ModelCatalogEntry.Type;
+type CatalogModel = typeof ModelCatalogEntry.Type;
 
 export function stagePrompt(stage: Stage, scopeOverride?: string): string {
   const scope = scopeOverride ?? stage.scope;
@@ -45,8 +45,8 @@ export function buildCodexExecArgs(
   ];
 }
 
-export const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
-  (invocationDirectory: string, fast = false) =>
+const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
+  (invocationDirectory: string, fast: boolean) =>
     Effect.scoped(
       Effect.gen(function* () {
         const input = yield* Queue.unbounded<Uint8Array>();

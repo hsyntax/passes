@@ -72,7 +72,7 @@ export const runCommand = Effect.fn("Process.runCommand")(
               }),
           ),
         );
-        return { code, signal: null, stdout: stdout.contents(), stderr: stderr.contents() };
+        return { code, stdout: stdout.contents(), stderr: stderr.contents() };
       }),
     ).pipe(
       Effect.timeout("10 seconds"),

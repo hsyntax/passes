@@ -12,8 +12,8 @@ const runStage = Effect.fn("Runner.runStage")(
     stage: Stage,
     invocationDirectory: string,
     reporter: Reporter,
-    scopeOverride?: string,
-    fast = false,
+    scopeOverride: string | undefined,
+    fast: boolean,
   ) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -130,14 +130,17 @@ export const runPlan = Effect.fn("Runner.runPlan")(
     Effect.gen(function* () {
       const catalog = yield* checkCodexCompatibility(plan, fast);
       const fastModels = new Set(
-        catalog
-          .filter(
-            (model) =>
-              fast &&
-              (model.serviceTiers?.some((tier) => tier.id === "priority" || tier.id === "fast") ||
-                (!model.serviceTiers?.length && model.additionalSpeedTiers?.includes("fast"))),
-          )
-          .map((model) => model.model),
+        fast
+          ? catalog
+              .filter(
+                (model) =>
+                  model.serviceTiers?.some(
+                    (tier) => tier.id === "priority" || tier.id === "fast",
+                  ) ||
+                  (!model.serviceTiers?.length && model.additionalSpeedTiers?.includes("fast")),
+              )
+              .map((model) => model.model)
+          : [],
       );
       if (fast) {
         for (const model of new Set(plan.stages.map((stage) => stage.model))) {
