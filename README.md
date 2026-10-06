@@ -1,8 +1,9 @@
 # passes
 
 A small TypeScript + Effect + Bun runner for Markdown-defined Codex stages.
-Stages with the same `step` run concurrently in the existing checkout. Layers run
-in ascending numeric order, with a full barrier between layers.
+Stages with the same `step` run concurrently, with at most four Codex processes
+active at once in the existing checkout. Layers run in ascending numeric order,
+with a full barrier between layers.
 
 ## Quick start
 

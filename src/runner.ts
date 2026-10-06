@@ -4,6 +4,8 @@ import { PassesError } from "./errors.ts";
 import { lineReporter, startProcess, waitForExit } from "./process.ts";
 import type { Plan, Stage } from "./stages.ts";
 
+const MAX_CONCURRENT_STAGES = 4;
+
 export interface Reporter {
   readonly out: (line: string) => void;
   readonly err: (line: string) => void;
@@ -72,7 +74,7 @@ export function runPlan(plan: Plan, reporter: Reporter, scopeOverride?: string) 
         layer.stages,
         (stage) => runStage(stage, plan.cwd, reporter, scopeOverride),
         {
-          concurrency: "unbounded",
+          concurrency: MAX_CONCURRENT_STAGES,
           discard: true,
         },
       );

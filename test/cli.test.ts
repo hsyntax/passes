@@ -310,6 +310,37 @@ describe("passes CLI acceptance", () => {
   );
 
   test(
+    "bounds same-step stage execution to four concurrent Codex processes",
+    async () => {
+      const ws = workspace();
+      for (let index = 0; index < 5; index++) {
+        const id = `stage-${index}`;
+        stage(ws, `${id}.md`, {
+          name: id,
+          prompt: directive(id, { delayMs: 150 }),
+        });
+      }
+      const result = await launch(ws).result;
+      expect(result.code).toBe(0);
+      const active = new Set<string>();
+      let peak = 0;
+      for (const event of events(ws)) {
+        if (!event.id) continue;
+        if (event.kind === "start") {
+          active.add(event.id);
+          peak = Math.max(peak, active.size);
+        } else if (event.kind === "finish") {
+          active.delete(event.id);
+        }
+      }
+      expect(peak).toBe(4);
+      expect(active.size).toBe(0);
+      await expectFixtureStopped(ws);
+    },
+    timeout,
+  );
+
+  test(
     "same-step stages overlap and later layers wait for every preceding stage",
     async () => {
       const ws = workspace();
