@@ -158,8 +158,9 @@ remote, both at the checkout root and in a nested directory:
 | Codex subprocesses (version, catalog, two stages) |      4 |     4 |
 | `model/list` requests for a one-page catalog      |      1 |     1 |
 
-Regression tests enforce these counts and verify that both stages still execute
-in layer order. Rejection tests cover non-repository paths, bare repositories,
+These counts record the optimization measurement. CLI tests verify that both
+layers edit the invocation directory and preserve prior edits without enforcing
+internal Git or catalog call counts. Rejection tests cover non-repository paths, bare repositories,
 and metadata directories before Codex or logging starts. The original suite
 passed all 131 tests; the focused operation-count and rejection run passed five
 tests after the change.

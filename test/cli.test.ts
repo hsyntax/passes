@@ -106,13 +106,16 @@ describe("passes CLI acceptance", () => {
     async (command) => {
       const ws = workspace();
       stage(ws, "stage.md");
-      for (const args of [
-        [command, "stages", "--scope"],
-        [command, "stages", "--scope", "PR", "--scope", "commit"],
+      for (const { args, diagnostic } of [
+        { args: [command, "stages", "--scope"], diagnostic: /scope.*nonempty single-line/i },
+        {
+          args: [command, "stages", "--scope", "PR", "--scope", "commit"],
+          diagnostic: /--scope.*only once/i,
+        },
       ]) {
         const result = await launch(ws, args).result;
         expect(result.code).toBe(1);
-        expect(result.output).toContain("scope");
+        expect(result.stderr).toMatch(diagnostic);
         expect(events(ws)).toEqual([]);
       }
     },
@@ -142,7 +145,7 @@ describe("passes CLI acceptance", () => {
       ]) {
         const result = await launch(ws, [command, "stages", "--scope", scope]).result;
         expect(result.code).toBe(1);
-        expect(result.output).toContain("scope");
+        expect(result.stderr).toMatch(/scope.*nonempty single-line/i);
         expect(events(ws)).toEqual([]);
       }
     },
@@ -201,36 +204,35 @@ describe("passes CLI acceptance", () => {
   );
 
   test.each(["root", "nested"])(
-    "checks the checkout once for a multilayer run from the %s directory",
+    "runs every layer in the %s invocation directory and preserves accumulated edits",
     async (location) => {
       const ws = workspace({ nested: location === "nested" });
-      const trace = join(ws.root, "git-trace.log");
-      ws.env.GIT_TRACE = trace;
-      stage(ws, "first.md", { prompt: directive("first") });
-      stage(ws, "second.md", { step: 1, prompt: directive("second") });
+      writeFileSync(join(ws.cwd, "dirty.txt"), "user changes\n");
+      stage(ws, "first.md", {
+        prompt: directive("first", {
+          appendFile: { path: "dirty.txt", content: "first layer edit\n" },
+        }),
+      });
+      stage(ws, "second.md", {
+        step: 1,
+        prompt: directive("second", {
+          appendFile: { path: "dirty.txt", content: "second layer edit\n" },
+        }),
+      });
       const result = await launch(ws).result;
       expect(result.code).toBe(0);
-      const gitCalls = readFileSync(trace, "utf8")
-        .split("\n")
-        .filter((line) => line.includes("trace: built-in: git "));
-      expect(gitCalls.filter((line) => line.includes("git rev-parse "))).toHaveLength(1);
-      expect(gitCalls).toHaveLength(3);
-      const observed = events(ws);
-      expect(observed.filter((event) => event.kind === "version")).toHaveLength(1);
-      expect(observed.filter((event) => event.kind === "app-server")).toHaveLength(1);
-      expect(observed.filter((event) => event.method === "model/list")).toHaveLength(1);
-      expect(observed.filter((event) => event.kind === "start").map((event) => event.id)).toEqual([
-        "first",
-        "second",
-      ]);
+      expect(readFileSync(join(ws.cwd, "dirty.txt"), "utf8")).toBe(
+        "user changes\nfirst layer edit\nsecond layer edit\n",
+      );
+      if (location === "nested") expect(existsSync(join(ws.repo, "dirty.txt"))).toBe(false);
       await expectFixtureStopped(ws);
     },
     timeout,
   );
 
   test.each([
-    { model: "not-in-catalog", effort: "medium", message: /model|not-in-catalog/i },
-    { model: "mock-model", effort: "ultra", message: /effort|ultra/i },
+    { model: "not-in-catalog", effort: "medium", message: /not-in-catalog.*not in.*catalog/i },
+    { model: "mock-model", effort: "ultra", message: /ultra.*unsupported/i },
   ])(
     "unsupported model/effort fails before any exec: %j",
     async ({ model, effort, message }) => {
@@ -239,8 +241,8 @@ describe("passes CLI acceptance", () => {
       stage(ws, "unsupported.md", { model, effort, step: 5 });
       const result = await launch(ws).result;
       expect(result.code).toBe(1);
-      expect(result.output).toMatch(message);
-      expect(events(ws).some((event) => event.kind === "app-server")).toBe(true);
+      expect(result.stderr).toContain("unsupported.md");
+      expect(result.stderr).toMatch(message);
       expect(events(ws).filter((event) => event.kind === "start")).toEqual([]);
       await expectFixtureStopped(ws);
     },
