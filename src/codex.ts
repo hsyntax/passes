@@ -23,15 +23,12 @@ export function stagePrompt(stage: Stage, scopeOverride?: string): string {
 
 export function execArgs(stage: Stage, cwd: string): string[] {
   return [
-    "--ask-for-approval",
-    "never",
     "exec",
+    "--approve-for-me",
     "--model",
     stage.model,
     "-c",
     `model_reasoning_effort=${JSON.stringify(stage.reasoning_effort)}`,
-    "--sandbox",
-    "workspace-write",
     "--cd",
     cwd,
     "--color",

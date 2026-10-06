@@ -157,15 +157,21 @@ catalog; actual access failures are reported when the stage executes.
 Each stage receives this argv shape, with no shell evaluation:
 
 ```text
-codex --ask-for-approval never exec --model MODEL
+codex exec --approve-for-me --model MODEL
   -c 'model_reasoning_effort="EFFORT"'
-  --sandbox workspace-write --cd INVOCATION_DIRECTORY
+  --cd INVOCATION_DIRECTORY
   --color never --ephemeral -
 ```
 
 The model and effort come from the stage. The effort is encoded as a quoted TOML
 string. Prompts go over stdin, avoiding shell interpretation and command-line
 length limits. Codex's existing environment/provider settings are preserved.
+`--approve-for-me` selects the workspace sandbox and routes escalation requests
+through automatic approval review. It cannot be combined with `--sandbox`.
+This lets stages request permission for Git
+writes such as `git add` and `git commit`, since `.git` is read-only inside the
+default workspace sandbox. Approval is still subject to policy; a denied request
+can leave changes uncommitted.
 `--ephemeral` avoids Codex session rollout persistence; the runner creates no
 logs, artifacts, or output directories. Codex may still perform its normal local
 configuration/cache operations. Stdout and stderr are streamed separately with

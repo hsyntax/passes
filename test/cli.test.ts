@@ -399,8 +399,9 @@ describe("passes CLI acceptance", () => {
       };
       expect(valueAfter("--model")).toBe(model);
       expect(valueAfter("-c")).toBe('model_reasoning_effort="high"');
-      expect(valueAfter("--sandbox")).toBe("workspace-write");
-      expect(valueAfter("--ask-for-approval")).toBe("never");
+      expect(args).not.toContain("--sandbox");
+      expect(args).toContain("--approve-for-me");
+      expect(args).not.toContain("--ask-for-approval");
       expect(valueAfter("--cd")).toBe(ws.cwd);
       expect(valueAfter("--color")).toBe("never");
       expect(args).toContain("--ephemeral");
