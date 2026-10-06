@@ -21,7 +21,7 @@ bun dist/passes.js validate stages
 
 ## Automated checks
 
-- 135 CLI behavior tests passing, zero failures
+- 136 CLI behavior tests passing, zero failures
 - Strict TypeScript typecheck passing
 - Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
@@ -128,6 +128,15 @@ inside it. The missing-directory test also checks the native errno and path.
 Verified on macOS with Bun 1.4.2: frozen Bun installation, `bun run repos:sync`,
 `bun run check` (131 tests, typecheck, lint, formatting, and build), source and
 bundled stage validation, and `git diff --check`. No live Codex calls were made.
+
+## Process cleanup regression
+
+The process-cleanup regression test starts a stage with its own TERM-ignoring
+descendant, waits for descendant readiness, then exits the stage with code 17.
+It verifies the failure diagnostic, that later stages do not start, and that no
+fixture processes survive. It failed before explicit scoped process-group cleanup
+was added and passes afterward. Cleanup uses the platform handle's `kill` with
+the existing 500 ms escalation timeout, including after the leader has exited.
 
 ## Redundant I/O verification
 

@@ -21,19 +21,24 @@ export const startProcess = Effect.fn(
     workingDirectory: string,
     input?: string | Stream.Stream<Uint8Array, PlatformError.PlatformError>,
   ) =>
-    ChildProcess.make(command, [...args], {
-      cwd: workingDirectory,
-      detached: true,
-      forceKillAfter: FORCE_KILL_AFTER,
-      stdin:
-        input === undefined
-          ? "ignore"
-          : typeof input === "string"
-            ? Stream.make(new TextEncoder().encode(input))
-            : input,
-      stdout: "pipe",
-      stderr: "pipe",
-    }).pipe(
+    Effect.acquireRelease(
+      ChildProcess.make(command, [...args], {
+        cwd: workingDirectory,
+        detached: true,
+        forceKillAfter: FORCE_KILL_AFTER,
+        stdin:
+          input === undefined
+            ? "ignore"
+            : typeof input === "string"
+              ? Stream.make(new TextEncoder().encode(input))
+              : input,
+        stdout: "pipe",
+        stderr: "pipe",
+      }),
+      // Effect 4.0.0's automatic cleanup only sends TERM after a nonzero exit.
+      // Explicit kill still escalates for surviving descendants after the leader exits.
+      (proc) => proc.kill({ forceKillAfter: FORCE_KILL_AFTER }).pipe(Effect.ignore),
+    ).pipe(
       Effect.mapError((error) => new PassesError(`Could not start ${command}: ${message(error)}`)),
     ),
 );

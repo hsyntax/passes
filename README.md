@@ -286,9 +286,9 @@ Discovery keeps Node's directory entries to ignore symlinks without extra file
 checks. Reads use `FileSystem.readFile` and Node UTF-8 decoding to preserve BOMs;
 the service owns read cancellation. The YAML dependency retains full core-schema
 parsing, duplicate-key diagnostics, and alias/tag rejection. Effect's YAML parser
-supports a narrower grammar. The custom subprocess adapter retains bounded pipe
-draining and TERM-to-KILL escalation even after a nonzero leader exit; the Effect
-4.0.0 spawner's cleanup differs in that case. The project deliberately avoids
+supports a narrower grammar. Process execution uses Effect's spawner with bounded
+pipe draining and explicit scoped TERM-to-KILL cleanup for descendants, including
+after a nonzero leader exit. The project deliberately avoids
 worktree libraries, databases, external services, or a second workflow format.
 
 ## Codex references

@@ -609,6 +609,30 @@ describe("passes CLI acceptance", () => {
     timeout,
   );
 
+  test(
+    "a failed stage kills its own TERM-ignoring descendants before returning",
+    async () => {
+      const ws = workspace();
+      stage(ws, "failure.md", {
+        prompt: directive("failure", {
+          spawnDescendant: true,
+          waitForDescendantOf: ["failure"],
+          exitCode: 17,
+        }),
+      });
+      stage(ws, "later.md", { step: 1, prompt: directive("later") });
+      const result = await launch(ws).result;
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("exit code 17");
+      expect(events(ws).some((event) => event.kind === "descendant")).toBe(true);
+      expect(events(ws).some((event) => event.kind === "start" && event.id === "later")).toBe(
+        false,
+      );
+      await expectFixtureStopped(ws);
+    },
+    timeout,
+  );
+
   test.each(["SIGINT", "SIGTERM"] as const)(
     "%s exits nonzero and cleans subprocess trees",
     async (signal) => {
