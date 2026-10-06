@@ -1,8 +1,8 @@
 ---
 name: Choose Effect function constructors
 step: 7
-model: gpt-6-luna
-reasoning_effort: xhigh
+model: gpt-6.1-sol
+reasoning_effort: high
 ---
 
 Choose constructors by purpose, preserving behavior and intentional observability.

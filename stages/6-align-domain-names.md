@@ -1,8 +1,8 @@
 ---
 name: Align domain names
 step: 6
-model: gpt-6-luna
-reasoning_effort: xhigh
+model: gpt-6.1-sol
+reasoning_effort: high
 ---
 
 Align function, variable, and module names with domain vocabulary already established in repository docs, types, and code.
