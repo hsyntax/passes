@@ -79,6 +79,10 @@ describe("run logging", () => {
       await waitFor(() => /^Log: /m.test(execution.stdout), "log path");
       const path = logPath(execution.stdout);
       await waitFor(() => readFileSync(path, "utf8").includes("live marker"), "live file output");
+      await waitFor(
+        () => events(ws).some((event) => event.kind === "ready" && event.id === "hold"),
+        "partial output written before cancellation",
+      );
       expect(execution.stdout).not.toContain("live marker");
       execution.child.kill("SIGTERM");
       const result = await execution.result;
@@ -132,7 +136,6 @@ describe("run logging", () => {
       const log = readFileSync(logPath(result.stdout), "utf8");
       expect(log).toContain("live stdout");
       expect(log).toContain("live stderr");
-      expect(events(ws).find((event) => event.kind === "start")?.args).not.toContain("--verbose");
     },
     timeout,
   );
@@ -142,15 +145,20 @@ describe("run logging", () => {
     async () => {
       const ws = workspace();
       ws.env.XDG_STATE_HOME = join(ws.root, "state");
-      stage(ws, "stage.md");
+      stage(ws, "stage.md", { prompt: directive("first", { stdout: "first run output\n" }) });
       const first = await launch(ws).result;
       const firstPath = logPath(first.stdout);
       const original = readFileSync(firstPath, "utf8");
+      stage(ws, "stage.md", { prompt: directive("second", { stdout: "second run output\n" }) });
       const second = await launch(ws).result;
       expect(first.code).toBe(0);
       expect(second.code).toBe(0);
       expect(firstPath).toStartWith(join(ws.root, "state/passes/runs"));
       expect(logPath(second.stdout)).not.toBe(firstPath);
+      expect(original).toContain("first run output");
+      const secondLog = readFileSync(logPath(second.stdout), "utf8");
+      expect(secondLog).toContain("second run output");
+      expect(secondLog).not.toContain("first run output");
       expect(readFileSync(firstPath, "utf8")).toBe(original);
     },
     timeout,

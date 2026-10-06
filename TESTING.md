@@ -44,8 +44,7 @@ discovery, internal/external symlinks and cycles, name collisions, and numeric
 layer ordering. Scope delivery checks cover frontmatter, invocation precedence,
 unscoped stages, and exact preservation of literal shell text and whitespace.
 Commit instructions are checked in the stdin actually delivered to Codex.
-The invocation checks require `--approve-for-me` and exclude the conflicting
-`--sandbox` and `--ask-for-approval` options.
+The invocation checks require the current `--approve-for-me` contract.
 
 Push tests use temporary local bare remotes and real commits created by the fake
 Codex fixture. They check that all pending commits reach the remote once after
@@ -79,6 +78,20 @@ was not changed by this review.
 
 These tests verify delivery of model instructions. They do not use a real model
 to interpret the instructions or create a commit.
+
+The PR test review replaced fixed stage delays with explicit fixture readiness
+and release files. The concurrency limit check verifies slot reuse and completion
+of every stage without requiring a particular scheduling order. The push check
+holds the final stage open and verifies that the bare remote has no branch yet,
+then checks the pushed file contents. Logging checks wait for partial output
+before cancellation and use distinct output to verify run isolation. Argument
+errors require relevant diagnostics; aggregate configuration errors do not depend
+on presentation order. Assertions about retired invocation flags were removed.
+
+Three additional mutation probes in temporary source copies failed as expected
+when concurrency was raised above four, a layer was serialized, or commits were
+pushed before stage execution. The concurrency check also passed with reversed
+stage scheduling order. Production sources were untouched by these probes.
 
 ## Stage guidance verification
 

@@ -44,6 +44,7 @@ describe("push after successful stages", () => {
     async () => {
       const { ws, remote } = remoteWorkspace({ nested: true });
       git(ws, "commit", "--allow-empty", "-m", "Existing pending commit");
+      const release = join(ws.root, "release-last");
       stage(ws, "first.md", {
         prompt: directive("first", {
           appendFile: { path: "first.txt", content: "first", commit: true },
@@ -53,19 +54,32 @@ describe("push after successful stages", () => {
         step: 1,
         prompt: directive("last", {
           appendFile: { path: "last.txt", content: "last", commit: true },
+          releaseFile: release,
         }),
       });
       const marker = join(ws.root, "push-count");
       const hook = join(remote, "hooks/pre-receive");
-      writeFileSync(
-        hook,
-        `#!/bin/sh\ntest -f '${join(ws.cwd, "last.txt")}' || exit 1\nprintf 'push\\n' >> '${marker}'\n`,
-      );
+      writeFileSync(hook, `#!/bin/sh\nprintf 'push\\n' >> '${marker}'\n`);
       chmodSync(hook, 0o755);
-      const result = await launch(ws).result;
+      const execution = launch(ws);
+      await waitFor(
+        () => events(ws).some((event) => event.kind === "ready" && event.id === "last"),
+        "final stage waiting for release",
+      );
+      expect(
+        git(ws, "--git-dir", remote, "for-each-ref", "--format=%(refname)", "refs/heads"),
+      ).toBe("");
+      writeFileSync(release, "release");
+      const result = await execution.result;
       expect(result.code).toBe(0);
       expect(git(ws, "--git-dir", remote, "rev-parse", "main")).toBe(git(ws, "rev-parse", "HEAD"));
       expect(git(ws, "--git-dir", remote, "rev-list", "--count", "main")).toBe("4");
+      expect(git(ws, "--git-dir", remote, "show", "main:packages/nested app/first.txt")).toBe(
+        "first",
+      );
+      expect(git(ws, "--git-dir", remote, "show", "main:packages/nested app/last.txt")).toBe(
+        "last",
+      );
       expect(git(ws, "rev-parse", "--abbrev-ref", "@{upstream}")).toBe("origin/main");
       expect(readFileSync(marker, "utf8")).toBe("push\n");
     },

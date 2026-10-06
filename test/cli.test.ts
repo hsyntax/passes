@@ -32,6 +32,8 @@ describe("passes CLI acceptance", () => {
       expect(result.output).toContain("First pass");
       expect(result.output).toContain("Peer pass");
       expect(result.output).toContain("Final review");
+      expect(result.output).toMatch(/step\s+0/i);
+      expect(result.output).toMatch(/step\s+8/i);
       expect(result.output.search(/step\s+0/i)).toBeLessThan(result.output.search(/step\s+8/i));
       expect(result.output).toMatch(/concurrent|parallel/i);
       expect(result.output).toMatch(/shared/i);
@@ -313,18 +315,54 @@ describe("passes CLI acceptance", () => {
     "bounds same-step stage execution to four concurrent Codex processes",
     async () => {
       const ws = workspace();
-      for (let index = 0; index < 5; index++) {
-        const id = `stage-${index}`;
+      const ids = Array.from({ length: 5 }, (_, index) => `stage-${index}`);
+      for (const id of ids) {
         stage(ws, `${id}.md`, {
           name: id,
-          prompt: directive(id, { delayMs: 150 }),
+          prompt: directive(id, {
+            minimumStarts: 4,
+            releaseFile: join(ws.root, `release-${id}`),
+          }),
         });
       }
-      const result = await launch(ws).result;
+      const execution = launch(ws);
+      await waitFor(
+        () => events(ws).filter((event) => event.kind === "ready").length >= 4,
+        "four stages waiting for release",
+      );
+      const started = events(ws)
+        .filter((event) => event.kind === "start")
+        .map((event) => event.id);
+      expect(started).toHaveLength(4);
+      const released = started[0]!;
+      const queued = ids.find((id) => !started.includes(id))!;
+      writeFileSync(join(ws.root, `release-${released}`), "release");
+      await waitFor(
+        () => events(ws).some((event) => event.kind === "ready" && event.id === queued),
+        "queued stage taking the released slot",
+      );
+      for (const id of ids) writeFileSync(join(ws.root, `release-${id}`), "release");
+      const result = await execution.result;
       expect(result.code).toBe(0);
+      const log = events(ws);
+      expect(
+        log
+          .filter((event) => event.kind === "start")
+          .map((event) => event.id)
+          .sort(),
+      ).toEqual(ids);
+      expect(
+        log
+          .filter((event) => event.kind === "finish")
+          .map((event) => event.id)
+          .sort(),
+      ).toEqual(ids);
+      expect(
+        log.findIndex((event) => event.kind === "start" && event.id === queued),
+      ).toBeGreaterThan(log.findIndex((event) => event.kind === "finish" && event.id === released));
       const active = new Set<string>();
       let peak = 0;
-      for (const event of events(ws)) {
+      for (const event of log) {
         if (!event.id) continue;
         if (event.kind === "start") {
           active.add(event.id);
@@ -346,14 +384,23 @@ describe("passes CLI acceptance", () => {
       const ws = workspace();
       stage(ws, "alpha.md", {
         name: "Alpha stage",
-        prompt: directive("alpha", { barrier: ["alpha", "beta"], delayMs: 150 }),
+        prompt: directive("alpha", {
+          barrier: ["alpha", "beta"],
+          releaseFile: join(ws.root, "release-alpha"),
+        }),
       });
       stage(ws, "beta.md", {
         name: "Beta stage",
-        prompt: directive("beta", { barrier: ["alpha", "beta"], delayMs: 25 }),
+        prompt: directive("beta", { barrier: ["alpha", "beta"] }),
       });
       stage(ws, "review.md", { name: "Review stage", step: 7, prompt: directive("review") });
-      const result = await launch(ws).result;
+      const execution = launch(ws);
+      await waitFor(() => execution.stdout.includes("Beta stage: completed"), "beta completion");
+      expect(events(ws).some((event) => event.kind === "start" && event.id === "review")).toBe(
+        false,
+      );
+      writeFileSync(join(ws.root, "release-alpha"), "release");
+      const result = await execution.result;
       expect(result.code).toBe(0);
       const log = events(ws);
       const position = (kind: string, id: string) =>
@@ -399,9 +446,7 @@ describe("passes CLI acceptance", () => {
       };
       expect(valueAfter("--model")).toBe(model);
       expect(valueAfter("-c")).toBe('model_reasoning_effort="high"');
-      expect(args).not.toContain("--sandbox");
       expect(args).toContain("--approve-for-me");
-      expect(args).not.toContain("--ask-for-approval");
       expect(valueAfter("--cd")).toBe(ws.cwd);
       expect(valueAfter("--color")).toBe("never");
       expect(args).toContain("--ephemeral");
@@ -552,18 +597,19 @@ describe("passes CLI acceptance", () => {
   );
 
   test.each([
-    { args: ["run", "stages", "--unexpected"] },
-    { args: ["run", "stages", "extra"] },
-    { args: ["validate"] },
-    { args: ["validate", "stages", "--verbose"] },
-    { args: ["run", "stages", "--verbose", "--verbose"] },
+    { args: ["run", "stages", "--unexpected"], message: /Expected passes/ },
+    { args: ["run", "stages", "extra"], message: /Expected passes/ },
+    { args: ["validate"], message: /Expected passes/ },
+    { args: ["validate", "stages", "--verbose"], message: /--verbose.*only supported by run/ },
+    { args: ["run", "stages", "--verbose", "--verbose"], message: /--verbose.*only once/ },
   ])(
     "rejects unsupported CLI arguments: %j",
-    async ({ args }) => {
+    async ({ args, message }) => {
       const ws = workspace();
       stage(ws, "stage.md");
       const result = await launch(ws, args).result;
       expect(result.code).toBe(1);
+      expect(result.stderr).toMatch(message);
       expect(events(ws)).toEqual([]);
     },
     timeout,

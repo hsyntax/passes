@@ -8,8 +8,9 @@ if (!eventPath) throw new Error("PASSES_TEST_EVENTS is required by the test fixt
 interface Directive {
   id: string;
   barrier?: string[];
+  minimumStarts?: number;
+  releaseFile?: string;
   waitForDescendantOf?: string[];
-  delayMs?: number;
   exitCode?: number;
   hold?: boolean;
   ignoreTerm?: boolean;
@@ -168,6 +169,10 @@ if (args[0] === "--version") {
     );
     log({ kind: "barrier", id: directive.id, pid: process.pid });
   }
+  const minimumStarts = directive.minimumStarts;
+  if (minimumStarts) {
+    await waitFor(() => events().filter((event) => event.kind === "start").length >= minimumStarts);
+  }
   if (directive.waitForDescendantOf) {
     await waitFor(
       () =>
@@ -189,10 +194,12 @@ if (args[0] === "--version") {
   }
   await output(process.stdout, directive.stdout);
   await output(process.stderr, directive.stderr);
+  log({ kind: "ready", id: directive.id, pid: process.pid });
+  const releaseFile = directive.releaseFile;
+  if (releaseFile) await waitFor(() => existsSync(releaseFile));
   if (directive.hold) {
     setInterval(() => {}, 1_000);
   } else {
-    await Bun.sleep(directive.delayMs ?? 0);
     log({ kind: "finish", id: directive.id, pid: process.pid, exitCode: directive.exitCode ?? 0 });
     process.exit(directive.exitCode ?? 0);
   }

@@ -287,8 +287,9 @@ describe("stage discovery through validate", () => {
       writeFileSync(join(ws.stages, "b.md"), document(`${header}\nunexpected_field: []`));
       const result = await launch(ws).result;
       expect(result.code).toBe(1);
-      expect(result.stderr).toMatch(/a\.md[\s\S]*step[\s\S]*b\.md/);
-      expect(result.stderr).toMatch(/b\.md[\s\S]*unexpected_field/);
+      for (const context of ["a.md", "step", "b.md", "unexpected_field"]) {
+        expect(result.stderr).toContain(context);
+      }
       expect(events(ws)).toEqual([]);
     },
     timeout,
