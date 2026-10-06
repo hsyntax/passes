@@ -24,9 +24,7 @@ const runStage = Effect.fn("Runner.runStage")(
         );
         // Register first so process termination/draining runs before the final line flush.
         yield* Effect.addFinalizer(() =>
-          Effect.all([stdout.end(), stderr.end()], { discard: true }).pipe(
-            Effect.catch(() => Effect.void),
-          ),
+          Effect.ignore(Effect.all([stdout.end(), stderr.end()], { discard: true })),
         );
         const proc = yield* startProcess(
           "codex",
@@ -34,11 +32,15 @@ const runStage = Effect.fn("Runner.runStage")(
           invocationDirectory,
           stagePrompt(stage, scopeOverride),
         );
-        const stdoutFiber = yield* Effect.forkScoped(
-          Stream.decodeText(proc.stdout).pipe(Stream.runForEach((chunk) => stdout.data(chunk))),
+        const stdoutFiber = yield* proc.stdout.pipe(
+          Stream.decodeText,
+          Stream.runForEach(stdout.data),
+          Effect.forkScoped,
         );
-        const stderrFiber = yield* Effect.forkScoped(
-          Stream.decodeText(proc.stderr).pipe(Stream.runForEach((chunk) => stderr.data(chunk))),
+        const stderrFiber = yield* proc.stderr.pipe(
+          Stream.decodeText,
+          Stream.runForEach(stderr.data),
+          Effect.forkScoped,
         );
         const processExit = yield* waitForExit(proc);
         yield* Effect.all([Fiber.join(stdoutFiber), Fiber.join(stderrFiber)]).pipe(
@@ -84,20 +86,22 @@ const pushPendingCommits = Effect.fn("Runner.pushPendingCommits")(
           reporter.detail(`[git push stderr] ${line}`, "stderr"),
         );
         yield* Effect.addFinalizer(() =>
-          Effect.all([stdout.end(), stderr.end()], { discard: true }).pipe(
-            Effect.catch(() => Effect.void),
-          ),
+          Effect.ignore(Effect.all([stdout.end(), stderr.end()], { discard: true })),
         );
         const proc = yield* startProcess(
           "git",
           ["-c", "push.autoSetupRemote=true", "push"],
           invocationDirectory,
         );
-        const stdoutFiber = yield* Effect.forkScoped(
-          Stream.decodeText(proc.stdout).pipe(Stream.runForEach((chunk) => stdout.data(chunk))),
+        const stdoutFiber = yield* proc.stdout.pipe(
+          Stream.decodeText,
+          Stream.runForEach(stdout.data),
+          Effect.forkScoped,
         );
-        const stderrFiber = yield* Effect.forkScoped(
-          Stream.decodeText(proc.stderr).pipe(Stream.runForEach((chunk) => stderr.data(chunk))),
+        const stderrFiber = yield* proc.stderr.pipe(
+          Stream.decodeText,
+          Stream.runForEach(stderr.data),
+          Effect.forkScoped,
         );
         const processExit = yield* waitForExit(proc);
         yield* Effect.all([Fiber.join(stdoutFiber), Fiber.join(stderrFiber)]).pipe(

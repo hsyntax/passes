@@ -40,13 +40,13 @@ export const waitForExit = Effect.fn("Process.waitForExit")((proc: ChildProcessH
 
 function captureOutputTail<E, R>(stream: Stream.Stream<Uint8Array, E, R>, limit: number) {
   let contents = "";
-  const collect = Stream.decodeText(stream).pipe(
+  const collect = stream.pipe(
+    Stream.decodeText,
     Stream.runForEach((chunk) =>
       Effect.sync(() => {
         contents = (contents + chunk).slice(-limit);
       }),
     ),
-    Effect.asVoid,
   );
   return { collect, contents: () => contents };
 }

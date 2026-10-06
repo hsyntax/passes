@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { BunServices } from "@effect/platform-bun";
-import { Cause, Clock, DateTime, Effect, Exit, Stdio } from "effect";
+import { Cause, DateTime, Effect, Exit, Stdio } from "effect";
 import { message, PassesError } from "./errors.ts";
 import { runCommand } from "./process.ts";
 import { createRunReporter, interruptNotice, terminal } from "./reporter.ts";
@@ -119,10 +119,7 @@ const main = Effect.fn("Cli.main")(() =>
       activeRunReporter = runReporter;
       reporter = runReporter.reporter;
       yield* reporter.out(`Log: ${runReporter.path}`);
-      const runStartedAt = yield* Clock.currentTimeMillis.pipe(
-        Effect.map(DateTime.makeUnsafe),
-        Effect.map(DateTime.formatIso),
-      );
+      const runStartedAt = yield* Effect.map(DateTime.now, DateTime.formatIso);
       yield* runReporter.context(`Started: ${runStartedAt}\n${renderPlanGraph(plan)}`);
       yield* runPlan(plan, runReporter.reporter, scopeOverride, fastMode);
     }).pipe(

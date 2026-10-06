@@ -57,15 +57,15 @@ export const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
           Stream.fromQueue(input),
         );
         let stderr = "";
-        yield* Effect.forkScoped(
-          Stream.decodeText(proc.stderr).pipe(
-            Stream.runForEach((chunk) =>
-              Effect.sync(() => {
-                stderr = (stderr + chunk).slice(-8_000);
-              }),
-            ),
-            Effect.catch(() => Effect.void),
+        yield* proc.stderr.pipe(
+          Stream.decodeText,
+          Stream.runForEach((chunk) =>
+            Effect.sync(() => {
+              stderr = (stderr + chunk).slice(-8_000);
+            }),
           ),
+          Effect.ignore,
+          Effect.forkScoped,
         );
         let requestId = 1;
         let initialized = false;
@@ -156,8 +156,10 @@ export const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
             return true;
           }),
         );
-        const stdoutFiber = yield* Effect.forkScoped(
-          Stream.decodeText(proc.stdout).pipe(Stream.runForEachWhile(processModelCatalogChunk)),
+        const stdoutFiber = yield* proc.stdout.pipe(
+          Stream.decodeText,
+          Stream.runForEachWhile(processModelCatalogChunk),
+          Effect.forkScoped,
         );
         yield* sendRpcRequest({
           id: 1,

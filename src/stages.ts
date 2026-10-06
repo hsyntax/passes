@@ -119,14 +119,6 @@ export const parseStage = Effect.fn(function* (source: string, file: string) {
   return { ...stageFrontmatter, slug, prompt, file };
 });
 
-// The platform API returns names only; Dirent flags preserve the no-symlink walk.
-// readdir has no abort option: interruption stops the fiber, not the native read.
-const readDirectoryEntries = (directory: string) =>
-  Effect.tryPromise({
-    try: () => readdir(directory, { withFileTypes: true }),
-    catch: (error) => error,
-  });
-
 const discoverStageFiles = Effect.fn((stagesDirectory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -139,7 +131,12 @@ const discoverStageFiles = Effect.fn((stagesDirectory: string) =>
     const stageFiles: string[] = [];
     const walk: (dir: string) => Effect.Effect<void, unknown, never> = Effect.fn((dir: string) =>
       Effect.gen(function* () {
-        const entries = yield* readDirectoryEntries(dir);
+        // The platform API returns names only; Dirent flags preserve the no-symlink walk.
+        // readdir has no abort option: interruption stops the fiber, not the native read.
+        const entries = yield* Effect.tryPromise({
+          try: () => readdir(dir, { withFileTypes: true }),
+          catch: (error) => error,
+        });
         entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
         for (const entry of entries) {
           const entryPath = path.join(dir, entry.name);
@@ -171,17 +168,13 @@ export const loadPlan = Effect.fn("Stages.loadPlan")(
       const stageSlugs = new Map<string, string>();
       for (const stagePath of stageFiles) {
         const file = path.relative(invocationDirectory, stagePath) || stagePath;
-        const source = yield* fs.readFile(stagePath).pipe(
+        const result = yield* fs.readFile(stagePath).pipe(
           Effect.mapError((error) => error.cause ?? error),
           // Match Node's UTF-8 decoding, including preservation of a leading BOM.
           Effect.map((source) => Buffer.from(source).toString("utf8")),
+          Effect.flatMap((source) => parseStage(source, file)),
           Effect.result,
         );
-        if (Result.isFailure(source)) {
-          errors.push(source.failure);
-          continue;
-        }
-        const result = yield* Effect.result(parseStage(source.success, file));
         if (Result.isFailure(result)) {
           errors.push(result.failure);
           continue;

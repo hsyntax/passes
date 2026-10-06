@@ -106,13 +106,9 @@ export const createRunReporter = Effect.fn("Reporter.createRunReporter")(
           }),
         ),
       );
-      const report = Effect.fn(
-        (line: string, write: (line: string) => Effect.Effect<void, PassesError, Stdio.Stdio>) =>
-          record(line).pipe(Effect.andThen(write(line))),
-      );
       const reporter: Reporter = {
-        out: (line) => report(line, terminal.out),
-        err: (line) => report(line, terminal.err),
+        out: (line) => Effect.andThen(record(line), terminal.out(line)),
+        err: (line) => Effect.andThen(record(line), terminal.err(line)),
         detail: (line, stream = "stdout") =>
           record(line, true).pipe(
             Effect.andThen(
