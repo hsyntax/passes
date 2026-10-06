@@ -9,7 +9,7 @@ export interface Reporter {
   readonly err: (line: string) => void;
 }
 
-function runStage(stage: Stage, cwd: string, reporter: Reporter) {
+function runStage(stage: Stage, cwd: string, reporter: Reporter, scopeOverride?: string) {
   return Effect.scoped(
     Effect.gen(function* () {
       yield* Effect.sync(() => reporter.out(`${stage.name}: starting`));
@@ -25,7 +25,7 @@ function runStage(stage: Stage, cwd: string, reporter: Reporter) {
       const proc = yield* startProcess("codex", execArgs(stage, cwd), cwd);
       proc.child.stdout.on("data", stdout.data);
       proc.child.stderr.on("data", stderr.data);
-      proc.child.stdin.end(stagePrompt(stage));
+      proc.child.stdin.end(stagePrompt(stage, scopeOverride));
       const result = yield* waitForExit(proc);
       if (result.code !== 0)
         return yield* Effect.fail(
@@ -53,7 +53,7 @@ function runStage(stage: Stage, cwd: string, reporter: Reporter) {
   );
 }
 
-export function runPlan(plan: Plan, reporter: Reporter) {
+export function runPlan(plan: Plan, reporter: Reporter, scopeOverride?: string) {
   return Effect.gen(function* () {
     yield* preflight(plan);
     yield* Effect.sync(() =>
@@ -68,10 +68,14 @@ export function runPlan(plan: Plan, reporter: Reporter) {
         ),
       );
       // Effect interrupts sibling fibers and waits for their scoped process cleanup on failure.
-      yield* Effect.forEach(layer.stages, (stage) => runStage(stage, plan.cwd, reporter), {
-        concurrency: "unbounded",
-        discard: true,
-      });
+      yield* Effect.forEach(
+        layer.stages,
+        (stage) => runStage(stage, plan.cwd, reporter, scopeOverride),
+        {
+          concurrency: "unbounded",
+          discard: true,
+        },
+      );
     }
     yield* Effect.sync(() => reporter.out(`Finished: ${plan.stages.length} stages completed`));
   });

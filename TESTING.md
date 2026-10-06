@@ -1,7 +1,7 @@
 # Verification
 
 The original baseline was verified on Linux and macOS (Darwin arm64) with Bun 1.4.2.
-The stage additions and commit-prompt changes were verified on Linux with Bun 1.4.2;
+The stage examples, scope option, and commit-prompt changes were verified on Linux with Bun 1.4.2;
 the updated suite has not been rerun on macOS. The macOS test fixture
 canonicalizes temporary directories with `realpathSync` so `/var` and
 `/private/var` aliases compare correctly.
@@ -20,28 +20,42 @@ bun dist/passes.js validate stages
 
 ## Automated checks
 
-- 70 tests passing, 227 assertions, zero failures
+- 109 tests passing, 414 assertions, zero failures
 - Strict TypeScript typecheck passing
 - Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
 - Repository stage validation passing through the source and bundled CLI (4 stages, 4 layers)
 
-The 48 parser/unit tests cover required fields, unknown fields, malformed and
+The 80 parser/unit tests cover required fields, unknown fields, malformed and
 ambiguous YAML, duplicate YAML keys, invalid numeric values, quoted numbers,
 control characters, BOM/CRLF, literal prompt preservation, empty prompts,
 recursive deterministic discovery, symlink cycles, name/slug collisions, numeric
-layer ordering, graph barriers, safe argv, and split UTF-8 output.
+layer ordering, graph barriers, safe argv, split UTF-8 output, optional scope,
+literal scope preservation, invalid scope values, and invocation scope precedence.
 
-The 22 black-box CLI tests cover invalid plans never launching Codex, real
+The 29 black-box CLI tests cover invalid plans never launching Codex, real
 concurrency verified by file barriers, later-step barriers, model/effort/argv and
 stdin preservation, nested cwd, dirty file preservation, stdout/stderr labels,
 nonzero failure stopping advancement, sibling and descendant cancellation,
 TERM-ignoring subprocesses, exact SIGINT/SIGTERM exit codes, unsupported models
 and efforts (including a later layer), old CLI versions, malformed catalogs,
 pagination, omitted/repeated cursors, and interrupted preflight cleanup. Prompt
-checks verify that the original Markdown is preserved as a prefix and the standard
-commit instructions are appended exactly once to every stage invocation. Tests do
+checks verify the optional `Scope: <value>` first line, CLI override behavior,
+literal Markdown preservation, and standard commit instructions appended exactly
+once to every stage invocation. Tests do
 not rely on a real model to interpret those instructions or create a commit.
+
+## Example verification
+
+The stage examples are adapted guidance, not claimed upstream before/after pairs.
+The frozen dependency is `effect@4.0.0`; its installed source and matching public
+source tag were checked. The offline Mac's `repos/effect` checkout was not inspected.
+
+The Array and sequential Effect snippets passed strict TypeScript checks and focused
+runtime checks: 1,050 chunking comparisons, empty/invalid-size/domain boundaries,
+sequential ordering and failure, interruption with scoped cleanup, and the
+premature-resource-release counterexample. The database batching example is
+illustrative pseudocode, not a database benchmark or a verified resolver rewrite.
 
 ## Codex checks
 

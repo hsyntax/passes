@@ -72,10 +72,33 @@ All four frontmatter fields are required:
 - `model`: nonempty string, passed exactly to Codex
 - `reasoning_effort`: nonempty string, passed exactly through Codex configuration
 
-The Markdown body must be nonempty and is preserved verbatim at the start of stdin,
+Optional `scope` is a nonempty, single-line string. `PR`, `commit`, and descriptions
+such as `src/payments: missing-user handling` are all literal text; no value is
+resolved to a pull request, Git commit, changed-file list, or enforced boundary.
+Quote YAML values that could otherwise parse as numbers, booleans, or null.
+
+```yaml
+scope: "PR"
+```
+
+Override every stage's scope for one invocation with `--scope <text>`:
+
+```sh
+passes run ./stages --scope "commit"
+passes validate ./stages --scope "src/payments: missing-user handling"
+```
+
+The invocation value takes precedence over the stage's frontmatter. If either is
+present, the first prompt line is `Scope: <value>`, followed by a blank line. If
+neither is present, no scope line is added. Scope text is preserved exactly,
+including surrounding spaces, but blank-only values, control/format characters,
+and line separators are rejected. `validate` checks the option without running
+agents. Supply `--scope` at most once.
+
+The Markdown body must be nonempty and is preserved verbatim after any scope line,
 followed by the standard commit instructions below. There are no
 prompt variables, identifiers to configure, outputs, or artifact handoffs.
-Unknown fields and YAML aliases/tags are rejected. Strings are trimmed and may
+Unknown fields and YAML aliases/tags are rejected. Required strings are trimmed and may
 not contain embedded control/format characters. Names need a letter or number;
 case, accent, and punctuation normalization must not produce colliding slugs.
 

@@ -40,6 +40,59 @@ describe("frontmatter", () => {
     expect(stage.reasoning_effort).toBe("medium");
     expect(stage.prompt).toBe("Prompt\r\n");
   });
+  test("leaves scope undefined when the optional field is absent", () => {
+    expect(parseStage(document(), "unscoped.md").scope).toBeUndefined();
+  });
+  test.each([
+    "PR",
+    "commit",
+    "Review only the files under src/parser",
+    "  Preserve surrounding spaces  ",
+    "日本語 🌍: check the Before → After behavior",
+    "$(touch nope); `touch nope`; ${literal} | cat > nope",
+  ])("accepts arbitrary literal scope text without normalizing it: %j", (scope) => {
+    const body = "\n# Instructions\nKeep this body unchanged.\n";
+    const stage = parseStage(
+      document(`${header}\nscope: ${JSON.stringify(scope)}`, body),
+      "scoped.md",
+    );
+    expect(stage.scope).toBe(scope);
+    expect(stage.prompt).toBe(body);
+  });
+  test("accepts a plain YAML scope scalar without treating it as an enum", () => {
+    const stage = parseStage(
+      document(`${header}\nscope: files changed since yesterday`),
+      "scope.md",
+    );
+    expect(stage.scope).toBe("files changed since yesterday");
+  });
+  test.each(
+    [
+      null,
+      true,
+      123,
+      ["PR"],
+      { kind: "commit" },
+      "",
+      "   ",
+      "\u00a0\u3000",
+      "one\ntwo",
+      "one\rtwo",
+      "\tPR",
+      "PR\t",
+      "hello\u001b[31m",
+      "hello\u007f",
+      "hello\u0085world",
+      "hello\u200bworld",
+      "\ufeffPR",
+      "one\u2028two",
+      "one\u2029two",
+    ].map((scope) => ({ scope })),
+  )("rejects invalid scope with file and field context: %j", ({ scope }) => {
+    const source = document(`${header}\nscope: ${JSON.stringify(scope)}`);
+    expect(() => parseStage(source, "invalid-scope.md")).toThrow("invalid-scope.md");
+    expect(() => parseStage(source, "invalid-scope.md")).toThrow("scope");
+  });
   const bad: [string, string, string][] = [
     ["missing name", "step: 0\nmodel: x\nreasoning_effort: high", "name"],
     ["missing step", "name: Example\nmodel: x\nreasoning_effort: high", "step"],
@@ -209,6 +262,26 @@ describe("stage execution prompt", () => {
     expect(stagePrompt(stage)).toBe(expected);
     expect(stage.prompt).toBe(original);
   });
+
+  test.each([
+    { scope: "PR", override: undefined },
+    { scope: "commit", override: undefined },
+    { scope: "  Arbitrary scope with spaces  ", override: undefined },
+    { scope: undefined, override: "Only check parser behavior" },
+    { scope: "Stage default", override: "  $(touch nope); ${literal}  " },
+  ])(
+    "prepends exactly one scope line and preserves the body and commit appendix: %j",
+    ({ scope, override }) => {
+      const body = "\n# Literal body\r\n${not_a_variable}\n---\nBefore → After 🌍\n";
+      const yaml = scope === undefined ? header : `${header}\nscope: ${JSON.stringify(scope)}`;
+      const stage = parseStage(document(yaml, body), "scoped-prompt.md");
+      const expected = `Scope: ${override ?? scope}\n\n${body}\n\n${instructions}\n`;
+      expect(stagePrompt(stage, override)).toBe(expected);
+      expect(stagePrompt(stage, override)).toBe(expected);
+      expect(stage.prompt).toBe(body);
+      expect(stage.scope).toBe(scope);
+    },
+  );
 });
 
 test("line reporter preserves split UTF-8 and flushes partial bounded lines", () => {

@@ -5,12 +5,24 @@ import { parseDocument } from "yaml";
 import { message, PassesError } from "./errors.ts";
 
 const Text = Schema.String.check(Schema.isMinLength(1), Schema.isPattern(/^[^\p{Cc}\p{Cf}]+$/u));
+const ScopeText = Text.check(Schema.isPattern(/\S/), Schema.isPattern(/^[^\p{Zl}\p{Zp}]+$/u));
 const Metadata = Schema.Struct({
   name: Text,
   step: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   model: Text,
   reasoning_effort: Text,
+  scope: Schema.optionalKey(ScopeText),
 });
+
+export function parseScope(value: unknown): string {
+  try {
+    return Schema.decodeUnknownSync(ScopeText)(value);
+  } catch {
+    throw new PassesError(
+      "scope must be a nonempty single-line string without control or format characters",
+    );
+  }
+}
 
 export interface Stage {
   readonly name: string;
@@ -18,6 +30,7 @@ export interface Stage {
   readonly step: number;
   readonly model: string;
   readonly reasoning_effort: string;
+  readonly scope?: string;
   readonly prompt: string;
   readonly file: string;
 }
@@ -62,7 +75,7 @@ export function parseStage(source: string, file: string): Stage {
     raw = Object.fromEntries(
       Object.entries(raw).map(([key, value]) => [
         key,
-        typeof value === "string" ? value.trim() : value,
+        typeof value === "string" && key !== "scope" ? value.trim() : value,
       ]),
     );
   }

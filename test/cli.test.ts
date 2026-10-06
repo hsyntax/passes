@@ -47,6 +47,7 @@ interface Stage {
   step?: number;
   model?: string;
   effort?: string;
+  scope?: string;
   prompt?: string;
 }
 
@@ -99,6 +100,7 @@ function stage(ws: Workspace, filename: string, options: Stage = {}): string {
     `step: ${options.step ?? 0}`,
     `model: ${JSON.stringify(options.model ?? "mock-model")}`,
     `reasoning_effort: ${JSON.stringify(options.effort ?? "medium")}`,
+    ...(options.scope === undefined ? [] : [`scope: ${JSON.stringify(options.scope)}`]),
     "---",
     prompt,
   ].join("\n");
@@ -205,6 +207,117 @@ describe("passes CLI acceptance", () => {
       expect(result.output).toMatch(/shared|isolat/i);
       expect(events(ws)).toEqual([]);
       expect(readFileSync(join(ws.cwd, "untouched.txt"), "utf8")).toBe("original contents\n");
+    },
+    timeout,
+  );
+
+  test(
+    "validate accepts a scope override without resolving it or requiring Git or Codex",
+    async () => {
+      const ws = workspace({ git: false });
+      stage(ws, "stage.md", { scope: "frontmatter default" });
+      const marker = join(ws.cwd, "scope-injected-marker");
+      const scope = `  PR nonexistent; $(touch ${marker}); \`touch ${marker}\`  `;
+      const result = await launch(ws, ["validate", "stages", "--scope", scope]).result;
+      expect(result.code).toBe(0);
+      expect(result.output).toMatch(/1 stages/i);
+      expect(events(ws)).toEqual([]);
+      expect(existsSync(marker)).toBe(false);
+    },
+    timeout,
+  );
+
+  test(
+    "run prepends frontmatter scope as the first stdin line while keeping an unscoped stage unchanged",
+    async () => {
+      const ws = workspace();
+      const body = "\n# Literal Markdown\r\n${values}\nBefore → After 🌍\n";
+      const scope = "  Review only src/parser  ";
+      stage(ws, "scoped.md", { scope, prompt: body });
+      const unscoped = stage(ws, "unscoped.md", { step: 1, prompt: directive("unscoped") });
+      const result = await launch(ws).result;
+      expect(result.code).toBe(0);
+      const starts = events(ws).filter((event) => event.kind === "start");
+      expect(starts).toHaveLength(2);
+      expect(starts[0]?.prompt).toBe(`Scope: ${scope}\n\n${body}\n\n${commitInstructions}\n`);
+      expect(starts[1]?.prompt).toBe(`${unscoped}\n\n${commitInstructions}\n`);
+      await expectFixtureStopped(ws);
+    },
+    timeout,
+  );
+
+  test(
+    "run applies the exact CLI scope to every layer, overriding frontmatter and preserving literal shell text",
+    async () => {
+      const ws = workspace();
+      const marker = join(ws.cwd, "scope-injected-marker");
+      const scope = `  commit does-not-exist; $(touch ${marker}); \`touch ${marker}\`; \${literal}  `;
+      const first = stage(ws, "first.md", {
+        scope: "frontmatter scope must be replaced",
+        prompt: "First literal stage.\n",
+      });
+      const second = stage(ws, "second.md", { step: 1, prompt: "Second literal stage.\r\n" });
+      const result = await launch(ws, ["run", "stages", "--scope", scope]).result;
+      expect(result.code).toBe(0);
+      const starts = events(ws).filter((event) => event.kind === "start");
+      expect(starts.map((event) => event.prompt)).toEqual(
+        [first, second].map((body) => `Scope: ${scope}\n\n${body}\n\n${commitInstructions}\n`),
+      );
+      for (const start of starts) {
+        expect(start.prompt?.split("\n")[0]).toBe(`Scope: ${scope}`);
+        expect(start.args).not.toContain(scope);
+        expect(start.args).not.toContain("--scope");
+      }
+      expect(existsSync(marker)).toBe(false);
+      await expectFixtureStopped(ws);
+    },
+    timeout,
+  );
+
+  test.each(["run", "validate"])(
+    "%s rejects missing and duplicate scope options before starting Codex",
+    async (command) => {
+      const ws = workspace();
+      stage(ws, "stage.md");
+      for (const args of [
+        [command, "stages", "--scope"],
+        [command, "stages", "--scope", "PR", "--scope", "commit"],
+      ]) {
+        const result = await launch(ws, args).result;
+        expect(result.code).not.toBe(0);
+        expect(result.output).toContain("scope");
+        expect(events(ws)).toEqual([]);
+      }
+    },
+    timeout,
+  );
+
+  test.each(["run", "validate"])(
+    "%s rejects blank, multiline, control, and format characters in CLI scope before starting Codex",
+    async (command) => {
+      const ws = workspace();
+      stage(ws, "stage.md");
+      for (const scope of [
+        "",
+        "   ",
+        "\u00a0\u3000",
+        "one\ntwo",
+        "one\rtwo",
+        "\tPR",
+        "PR\t",
+        "hello\u001b[31m",
+        "hello\u007f",
+        "hello\u0085world",
+        "hello\u200bworld",
+        "\ufeffPR",
+        "one\u2028two",
+        "one\u2029two",
+      ]) {
+        const result = await launch(ws, [command, "stages", "--scope", scope]).result;
+        expect(result.code).not.toBe(0);
+        expect(result.output).toContain("scope");
+        expect(events(ws)).toEqual([]);
+      }
     },
     timeout,
   );

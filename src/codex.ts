@@ -15,8 +15,10 @@ const CatalogPage = Schema.Struct({
 });
 export type Model = typeof CatalogEntry.Type;
 
-export function stagePrompt(stage: Stage): string {
-  return `${stage.prompt}\n\nAfter completing the stage, inspect your changes and commit them. Use a short subject describing the outcome. In the body, explain why and show a compact Before → After sketch when useful. Record only checks actually run. Skip empty commits.\n`;
+export function stagePrompt(stage: Stage, scopeOverride?: string): string {
+  const scope = scopeOverride ?? stage.scope;
+  const prefix = scope === undefined ? "" : `Scope: ${scope}\n\n`;
+  return `${prefix}${stage.prompt}\n\nAfter completing the stage, inspect your changes and commit them. Use a short subject describing the outcome. In the body, explain why and show a compact Before → After sketch when useful. Record only checks actually run. Skip empty commits.\n`;
 }
 
 export function execArgs(stage: Stage, cwd: string): string[] {
