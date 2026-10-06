@@ -21,7 +21,7 @@ bun dist/passes.js validate stages
 
 ## Automated checks
 
-- 102 CLI behavior tests passing, zero failures
+- 110 CLI behavior tests passing, zero failures
 - Strict TypeScript typecheck passing
 - Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
@@ -44,6 +44,15 @@ discovery, internal/external symlinks and cycles, name collisions, and numeric
 layer ordering. Scope delivery checks cover frontmatter, invocation precedence,
 unscoped stages, and exact preservation of literal shell text and whitespace.
 Commit instructions are checked in the stdin actually delivered to Codex.
+The invocation checks require `--approve-for-me` and exclude the conflicting
+`--sandbox` and `--ask-for-approval` options.
+
+Push tests use temporary local bare remotes and real commits created by the fake
+Codex fixture. They check that all pending commits reach the remote once after
+the final stage, new branches receive an upstream, configured destinations are
+honored, and no remote means no push. Failed or interrupted stages and validation
+leave remote refs unchanged. A rejecting remote fails the run while preserving
+local commits. These tests never push to an external repository.
 
 Execution cases cover preflight rejection before any stage starts, paginated and
 malformed catalogs, missing/repeated cursors, unsupported models and efforts,
@@ -98,6 +107,9 @@ It confirmed that `gpt-6-luna` supports catalog efforts low, medium, high, xhigh
 and max in that installation. The probe also confirmed that catalog success does
 not imply live model access, because a bundled catalog is available without login.
 
-No real model call or repository rewrite was performed. Live account access,
-quota, and provider behavior have not been end-to-end tested. Mac execution was
-verified with the fake Codex fixture, including concurrency and cancellation.
+The original catalog verification performed no real model call or repository
+rewrite. A subsequent manual six-stage run on macOS completed using Codex 0.160.1;
+several stage commit attempts were denied under the old `never` approval policy.
+The updated `--approve-for-me` invocation was checked against installed CLI help
+and the fake fixture; its live approval flow has not been rerun. The automated
+suite makes no model calls, including its concurrency, cancellation, and push tests.

@@ -168,8 +168,8 @@ string. Prompts go over stdin, avoiding shell interpretation and command-line
 length limits. Codex's existing environment/provider settings are preserved.
 `--approve-for-me` selects the workspace sandbox and routes escalation requests
 through automatic approval review. It cannot be combined with `--sandbox`.
-This lets stages request permission for Git
-writes such as `git add` and `git commit`, since `.git` is read-only inside the
+This lets stages request permission for Git writes such as `git add` and
+`git commit`, since `.git` is read-only inside the
 default workspace sandbox. Approval is still subject to policy; a denied request
 can leave changes uncommitted.
 `--ephemeral` avoids Codex session rollout persistence; the runner creates no
@@ -186,6 +186,16 @@ not a runner-enforced guarantee: the runner does not stage files, create commits
 verify commit messages, or require a clean checkout. A successful process exit does
 not prove that a commit was created. Review the resulting diff and Git history.
 
+After every stage succeeds, the runner pushes committed history when a Git remote
+exists. It runs `git -c push.autoSetupRemote=true push`, respecting Git's configured
+push destination and setting an upstream for a new branch under the usual
+`simple`, `current`, or `upstream` push defaults. This pushes the current branch's
+pending commits, including any that existed before the run; it does not commit
+remaining working-tree edits. Repositories without remotes skip this step.
+Stage failure or cancellation prevents the push. Push failures (including missing
+credentials, ambiguous destinations, and rejected updates) fail the run and retain
+local commits. There is no forced push or automatic retry.
+
 Effect controls concurrent fibers, sequential barriers, scoped process resources,
 timeouts, and interruption. A failed stage prevents later layers from starting
 and interrupts its siblings. SIGINT/SIGTERM interrupt all active work. Dedicated
@@ -195,7 +205,7 @@ Processes deliberately detaching into new sessions cannot be fully controlled by
 this mechanism; stage commands should not daemonize. Windows execution is
 explicitly unsupported rather than using incomplete tree cancellation.
 
-Exit codes: `0` success, `1` validation/setup/stage failure, `130` SIGINT,
+Exit codes: `0` success, `1` validation/setup/stage/push failure, `130` SIGINT,
 `143` SIGTERM. A stage failure includes its actual exit code or signal.
 
 ## Shared-checkout safety

@@ -14,7 +14,7 @@ Usage:
 
 Markdown stages in the directory are discovered recursively (.md, no symlinks).
 validate checks YAML and prints the layer graph without invoking Codex.
-run validates, checks Codex's model catalog, then executes each layer.
+run validates, checks Codex's model catalog, executes each layer, then pushes if a remote exists.
 --scope overrides stage scope and prepends a literal Scope: line to each prompt.
 All agents use your invocation directory in its existing Git checkout.
 Concurrent stages share files. No commits, worktrees, branches, or artifacts are managed.

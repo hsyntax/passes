@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import { execArgs, preflight, stagePrompt } from "./codex.ts";
 import { PassesError } from "./errors.ts";
-import { lineReporter, startProcess, waitForExit } from "./process.ts";
+import { collectProcess, lineReporter, startProcess, waitForExit } from "./process.ts";
 import type { Plan, Stage } from "./stages.ts";
 
 const MAX_CONCURRENT_STAGES = 4;
@@ -56,6 +56,50 @@ const runStage = Effect.fn("Runner.runStage")(
     ),
 );
 
+const pushCommits = Effect.fn("Runner.pushCommits")((cwd: string, reporter: Reporter) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const remotes = yield* collectProcess("git", ["remote"], cwd);
+      if (remotes.code !== 0)
+        return yield* Effect.fail(new PassesError(`Could not list Git remotes: ${remotes.stderr}`));
+      if (!remotes.stdout.trim()) {
+        yield* Effect.sync(() => reporter.out("No Git remote configured; skipping push."));
+        return;
+      }
+      yield* Effect.sync(() => reporter.out("All stages completed; pushing commits..."));
+      const stdout = lineReporter((line) => reporter.out(`[git push] ${line}`));
+      const stderr = lineReporter((line) => reporter.err(`[git push] ${line}`));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          stdout.end();
+          stderr.end();
+        }),
+      );
+      const proc = yield* startProcess("git", ["-c", "push.autoSetupRemote=true", "push"], cwd);
+      proc.child.stdout.on("data", stdout.data);
+      proc.child.stderr.on("data", stderr.data);
+      proc.child.stdin.end();
+      const result = yield* waitForExit(proc);
+      yield* Effect.promise(() => proc.closed).pipe(
+        Effect.timeout(1_000),
+        Effect.mapError(
+          () =>
+            new PassesError(
+              "git push exited but a descendant kept its output pipe open; check the remote before retrying.",
+            ),
+        ),
+      );
+      if (result.code !== 0)
+        return yield* Effect.fail(
+          new PassesError(
+            `git push failed with ${result.signal ? `signal ${result.signal}` : `exit code ${result.code}`}; local commits are retained.`,
+          ),
+        );
+      yield* Effect.sync(() => reporter.out("Git push completed."));
+    }),
+  ),
+);
+
 export const runPlan = Effect.fn("Runner.runPlan")(
   (plan: Plan, reporter: Reporter, scopeOverride?: string) =>
     Effect.gen(function* () {
@@ -81,6 +125,7 @@ export const runPlan = Effect.fn("Runner.runPlan")(
           },
         );
       }
+      yield* pushCommits(plan.cwd, reporter);
       yield* Effect.sync(() => reporter.out(`Finished: ${plan.stages.length} stages completed`));
     }),
 );

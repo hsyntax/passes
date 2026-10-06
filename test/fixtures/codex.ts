@@ -17,7 +17,7 @@ interface Directive {
   outputBytewise?: boolean;
   stdout?: string;
   stderr?: string;
-  appendFile?: { path: string; content: string };
+  appendFile?: { path: string; content: string; commit?: boolean };
 }
 
 interface Event {
@@ -142,6 +142,15 @@ if (args[0] === "--version") {
     const path = resolve(process.cwd(), directive.appendFile.path);
     const before = existsSync(path) ? readFileSync(path, "utf8") : "";
     writeFileSync(path, before + directive.appendFile.content);
+    if (directive.appendFile.commit) {
+      for (const args of [
+        ["add", "--", path],
+        ["commit", "-m", `Fixture stage ${directive.id}`],
+      ]) {
+        const result = Bun.spawnSync(["git", ...args]);
+        if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+      }
+    }
   }
   if (directive.spawnDescendant) {
     Bun.spawn([process.execPath, import.meta.path, "__descendant", directive.id], {
