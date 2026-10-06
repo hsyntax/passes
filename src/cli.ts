@@ -46,7 +46,7 @@ function main() {
       let verbose = false;
       let fast = false;
       for (let index = 0; index < args.length; index += 1) {
-        const argument = args[index];
+        const argument = args[index]!;
         if (argument === "--fast") {
           if (fast) return yield* Effect.fail(new PassesError("--fast may be supplied only once"));
           fast = true;
@@ -59,7 +59,7 @@ function main() {
           continue;
         }
         if (argument !== "--scope") {
-          if (argument !== undefined) positional.push(argument);
+          positional.push(argument);
           continue;
         }
         if (scope !== undefined)
@@ -117,9 +117,7 @@ function main() {
         Effect.map(DateTime.formatIso),
       );
       yield* log.context(`Started: ${startedAt}\n${renderPlanGraph(plan)}`);
-      yield* runPlan(plan, log.reporter, scope, fast).pipe(
-        Effect.mapError((error) => new PassesError(message(error))),
-      );
+      yield* runPlan(plan, log.reporter, scope, fast);
     }).pipe(
       Effect.onExit((exit) =>
         Effect.gen(function* () {
