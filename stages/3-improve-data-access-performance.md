@@ -1,6 +1,6 @@
 ---
 name: Improve data-access performance
-step: 2
+step: 3
 model: gpt-6-luna
 reasoning_effort: high
 ---

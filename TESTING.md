@@ -24,7 +24,7 @@ bun dist/passes.js validate stages
 - Strict TypeScript typecheck passing
 - Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
-- Repository stage validation passing through the source and bundled CLI (4 stages, 4 layers)
+- Repository stage validation passing through the source and bundled CLI (5 stages, 5 layers)
 
 The 80 parser/unit tests cover required fields, unknown fields, malformed and
 ambiguous YAML, duplicate YAML keys, invalid numeric values, quoted numbers,
@@ -46,6 +46,11 @@ once to every stage invocation. Tests do
 not rely on a real model to interpret those instructions or create a commit.
 
 ## Stage guidance verification
+
+The boundary stage prefers existing Effect integrations and otherwise the smallest
+external adapter. It distinguishes Effect interruption from actual SDK abort support
+and retains genuine entrypoint/Promise integration. No external SDK integration was
+rewritten or live-tested by this instruction-only change.
 
 The combined Effect stage distills the relevant direct-API and abstraction guidance from
 an installed user-provided Effect rewrite skill. It deliberately omits broader bug-fix

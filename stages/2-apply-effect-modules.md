@@ -1,6 +1,6 @@
 ---
 name: Apply Effect modules
-step: 1
+step: 2
 model: gpt-6-luna
 reasoning_effort: xhigh
 ---
