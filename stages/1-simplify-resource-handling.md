@@ -11,23 +11,7 @@ Use existing functions directly; avoid unnecessary wrappers.
 
 Style for these rewrites: use a direct call for one operation; use `pipe` for two or more chained operations, with at most five calls per chain outside generators. Inside generators, combine transformations of the same value before yielding; keep dependent actions separate.
 
-## Good rewrite
-
-For ordinary arrays with `size` already validated as a positive integer:
-
-```ts
-import { Array } from "effect";
-
-// Before
-const chunks: string[][] = [];
-for (let i = 0; i < items.length; i += size) {
-  chunks.push(items.slice(i, i + size));
-}
-consume(chunks);
-
-// After: call the existing function directly, without a forwarding helper or alias.
-consume(Array.chunksOf(items, size));
-```
+- Before: `batches(items, n)` only forwards arguments; after: `Array.chunksOf(items, n)` directly.
 
 Keep size validation: `Array.chunksOf` normalizes invalid sizes instead of rejecting them.
 
