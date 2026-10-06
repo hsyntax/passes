@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { Cause, Effect, Exit } from "effect";
+import { Cause, Clock, DateTime, Effect, Exit, Stdio } from "effect";
 import { message, PassesError } from "./errors.ts";
 import { runCommand, nodeProcessLayer } from "./process.ts";
 import { createRunReporter, interruptNotice, terminal } from "./reporter.ts";
@@ -29,9 +29,10 @@ let reporter: Reporter = terminal;
 let runLog: RunReporter | undefined;
 let loggingFailure: PassesError | undefined;
 
-function main(args: readonly string[]) {
+function main() {
   return Effect.scoped(
     Effect.gen(function* () {
+      const args = yield* Stdio.Stdio.pipe(Effect.flatMap((stdio) => stdio.args));
       if (args.length === 1 && args[0] === "--help") {
         yield* reporter.out(HELP);
         return;
@@ -86,7 +87,7 @@ function main(args: readonly string[]) {
         return yield* Effect.fail(new PassesError("--verbose is only supported by run"));
       if (fast && command !== "run")
         return yield* Effect.fail(new PassesError("--fast is only supported by run"));
-      const invocationDirectory = process.cwd();
+      const invocationDirectory = yield* Effect.sync(() => process.cwd());
       const plan = yield* loadPlan(stagesDirectory, invocationDirectory);
       if (command === "validate") {
         yield* reporter.out(renderPlanGraph(plan));
@@ -111,7 +112,10 @@ function main(args: readonly string[]) {
       runLog = log;
       reporter = log.reporter;
       yield* reporter.out(`Log: ${log.path}`);
-      yield* log.context(`Started: ${new Date().toISOString()}\n${renderPlanGraph(plan)}`);
+      const startedAt = yield* Clock.currentTimeMillis;
+      yield* log.context(
+        `Started: ${DateTime.formatIso(DateTime.makeUnsafe(startedAt))}\n${renderPlanGraph(plan)}`,
+      );
       yield* runPlan(plan, log.reporter, scope, fast).pipe(
         Effect.mapError((error) => new PassesError(message(error))),
       );
@@ -151,13 +155,12 @@ const outputError = (error: NodeJS.ErrnoException) => {
 };
 process.stdout.on("error", outputError);
 process.stderr.on("error", outputError);
-const interrupt = Effect.runCallback(
-  main(process.argv.slice(2)).pipe(Effect.provide(nodeProcessLayer)),
-  {
-    onExit: (exit) => {
-      process.removeListener("SIGINT", sigint);
-      process.removeListener("SIGTERM", sigterm);
-      if (Exit.isFailure(exit) && process.exitCode === undefined) process.exitCode = 1;
-    },
+const interrupt = Effect.runCallback(main().pipe(Effect.provide(nodeProcessLayer)), {
+  onExit: (exit) => {
+    process.removeListener("SIGINT", sigint);
+    process.removeListener("SIGTERM", sigterm);
+    process.stdout.removeListener("error", outputError);
+    process.stderr.removeListener("error", outputError);
+    if (Exit.isFailure(exit) && process.exitCode === undefined) process.exitCode = 1;
   },
-);
+});
