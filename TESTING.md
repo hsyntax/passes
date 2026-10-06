@@ -21,7 +21,7 @@ bun dist/passes.js validate stages
 
 ## Automated checks
 
-- 131 CLI behavior tests passing, zero failures
+- 135 CLI behavior tests passing, zero failures
 - Strict TypeScript typecheck passing
 - Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
@@ -128,6 +128,51 @@ inside it. The missing-directory test also checks the native errno and path.
 Verified on macOS with Bun 1.4.2: frozen Bun installation, `bun run repos:sync`,
 `bun run check` (131 tests, typecheck, lint, formatting, and build), source and
 bundled stage validation, and `git diff --check`. No live Codex calls were made.
+
+## Redundant I/O verification
+
+The PR review found a duplicate checkout probe: the CLI already runs
+`git rev-parse --show-toplevel` to locate the checkout before creating a log,
+then Codex preflight ran `git rev-parse --is-inside-work-tree` again. The first
+command rejects bare repositories and Git metadata directories as well as paths
+outside a repository. It remains the single checkout check on every invocation;
+no repository state is cached across runs.
+
+Git's `GIT_TRACE` and the Codex fixture events measured two-layer runs without a
+remote, both at the checkout root and in a nested directory:
+
+| External operation                                | Before | After |
+| ------------------------------------------------- | -----: | ----: |
+| Checkout probes                                   |      2 |     1 |
+| Total Git subprocesses                            |      4 |     3 |
+| Codex subprocesses (version, catalog, two stages) |      4 |     4 |
+| `model/list` requests for a one-page catalog      |      1 |     1 |
+
+Regression tests enforce these counts and verify that both stages still execute
+in layer order. Rejection tests cover non-repository paths, bare repositories,
+and metadata directories before Codex or logging starts. The original suite
+passed all 131 tests; the focused operation-count and rejection run passed five
+tests after the change.
+
+The first full check hit an existing cancellation race in the streaming test:
+the fixture's exit event could arrive before the runner finished draining its
+Unicode output. An unchanged-source probe reproduced the failure once in ten
+runs. The test now waits for the runner's completion message before cancelling
+the still-active long-output stage, using captured stdout instead of rereading
+the fixture event file on each poll. Output assertions remain unchanged, and
+ten repeated runs of the corrected test passed.
+
+The scoped runner has no database queries. Stage files are already read once,
+the catalog is shared across all stages, and pagination requests depend on the
+previous cursor. The vendored Effect `RequestResolver` and filesystem APIs were
+reviewed; these paths have no compatible independent requests backed by a bulk
+API. Logging remains immediate, and commit reporting and remote discovery remain
+after execution to observe changes made by stages.
+
+Final verification passed on macOS with Bun 1.4.2 and Git 2.47.1:
+`bun run check` (135 tests, typecheck, lint, formatting, and build), source and
+bundled stage validation (seven stages and layers), and `git diff --check`.
+All execution checks used the fake Codex fixture; no live model calls were made.
 
 ## Stage guidance verification
 

@@ -101,6 +101,7 @@ function main(
         yield* reporter.out(renderPlanGraph(plan));
         return;
       }
+      // This also rejects bare repositories and Git metadata directories, before Codex starts.
       const repository = yield* collectProcess("git", ["rev-parse", "--show-toplevel"], plan.cwd);
       if (repository.code !== 0)
         return yield* Effect.fail(

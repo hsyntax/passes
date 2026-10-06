@@ -181,13 +181,6 @@ export const preflight = Effect.fn("Codex.preflight")((plan: Plan, fast = false)
           "passes currently supports macOS and Linux; safe process-group cancellation requires POSIX.",
         ),
       );
-    const git = yield* collectProcess("git", ["rev-parse", "--is-inside-work-tree"], plan.cwd);
-    if (git.code !== 0 || git.stdout.trim() !== "true")
-      return yield* Effect.fail(
-        new PassesError(
-          "Run passes from inside the existing Git checkout you want to work on. No repository is created or switched.",
-        ),
-      );
     const version = yield* collectProcess("codex", ["--version"], plan.cwd);
     const match = /codex(?:-cli)?\s+(\d+)\.(\d+)\.(\d+)/.exec(version.stdout);
     if (version.code !== 0 || !match)

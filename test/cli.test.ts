@@ -177,15 +177,53 @@ describe("passes CLI acceptance", () => {
     timeout,
   );
 
-  test(
-    "run refuses a directory outside a git repository",
-    async () => {
-      const ws = workspace({ git: false });
+  test.each(["outside", "bare", "metadata"])(
+    "run refuses a directory without a Git worktree before Codex or logging starts: %s",
+    async (kind) => {
+      const ws = workspace({ git: kind === "metadata" });
+      if (kind === "bare") {
+        const init = Bun.spawnSync(["git", "init", "--bare", "--quiet", ws.repo], {
+          env: ws.env,
+        });
+        expect(init.exitCode).toBe(0);
+      } else if (kind === "metadata") {
+        ws.cwd = join(ws.repo, ".git");
+        ws.stages = join(ws.cwd, "stages");
+      }
       stage(ws, "stage.md");
       const result = await launch(ws).result;
       expect(result.code).toBe(1);
       expect(result.output).toMatch(/git|repository/i);
       expect(events(ws)).toEqual([]);
+      expect(existsSync(join(ws.root, "home", ".local", "state", "passes", "runs"))).toBe(false);
+    },
+    timeout,
+  );
+
+  test.each(["root", "nested"])(
+    "checks the checkout once for a multilayer run from the %s directory",
+    async (location) => {
+      const ws = workspace({ nested: location === "nested" });
+      const trace = join(ws.root, "git-trace.log");
+      ws.env.GIT_TRACE = trace;
+      stage(ws, "first.md", { prompt: directive("first") });
+      stage(ws, "second.md", { step: 1, prompt: directive("second") });
+      const result = await launch(ws).result;
+      expect(result.code).toBe(0);
+      const gitCalls = readFileSync(trace, "utf8")
+        .split("\n")
+        .filter((line) => line.includes("trace: built-in: git "));
+      expect(gitCalls.filter((line) => line.includes("git rev-parse "))).toHaveLength(1);
+      expect(gitCalls).toHaveLength(3);
+      const observed = events(ws);
+      expect(observed.filter((event) => event.kind === "version")).toHaveLength(1);
+      expect(observed.filter((event) => event.kind === "app-server")).toHaveLength(1);
+      expect(observed.filter((event) => event.method === "model/list")).toHaveLength(1);
+      expect(observed.filter((event) => event.kind === "start").map((event) => event.id)).toEqual([
+        "first",
+        "second",
+      ]);
+      await expectFixtureStopped(ws);
     },
     timeout,
   );
@@ -514,7 +552,7 @@ describe("passes CLI acceptance", () => {
       await waitFor(
         () =>
           execution.stdout.includes("[Long stage] x") &&
-          events(ws).some((event) => event.kind === "finish" && event.id === "unicode"),
+          execution.stdout.includes("Unicode stage: completed"),
         "output before the long-running stage exits",
       );
       execution.child.kill("SIGINT");
