@@ -21,7 +21,7 @@ bun dist/passes.js validate stages
 
 ## Automated checks
 
-- 129 CLI behavior tests passing, zero failures
+- 131 CLI behavior tests passing, zero failures
 - Strict TypeScript typecheck passing
 - Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
@@ -106,6 +106,28 @@ tiers override current metadata, expanding excerpts to 50 lines, and buffering
 verbose output until exit. The unmodified implementation passed `bun run check`
 (typecheck, lint, formatting, all 129 tests, and build). `git diff --check` also
 passed. No production source was changed by this review.
+
+## Effect filesystem adoption
+
+The PR package review searched the complete vendored package tree, including
+manifests, source, tests, documentation, and examples. Candidates included CLI,
+YAML/NDJSON encoding, RPC serialization, runtime/process services, filesystem
+services, and test/tooling packages. The shared filesystem implementation used
+by Bun replaces the custom promise wrappers for directory metadata and stage
+reads. Its read API propagates Effect cancellation to Node's abort signal.
+Node decoding preserves the existing BOM behavior and native error causes keep
+the existing diagnostics. Directory-entry traversal, YAML parsing, and subprocess
+cleanup remain because the candidate replacements would change those contracts.
+
+Both lockfiles pin `@effect/platform-node-shared` 4.0.0 with Effect 4.0.0;
+the shared package's peer range is `^4.0.0`. Repository sync verifies both
+manifests in the same release tree. The added CLI tests reject repeated leading
+BOMs and accept a symlink as the supplied directory while ignoring broken links
+inside it. The missing-directory test also checks the native errno and path.
+
+Verified on macOS with Bun 1.4.2: frozen Bun installation, `bun run repos:sync`,
+`bun run check` (131 tests, typecheck, lint, formatting, and build), source and
+bundled stage validation, and `git diff --check`. No live Codex calls were made.
 
 ## Stage guidance verification
 

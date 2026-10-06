@@ -1,6 +1,7 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { layer as fileSystemLayer } from "@effect/platform-node-shared/NodeFileSystem";
+import { readdir } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
-import { Effect, Schema } from "effect";
+import { Effect, FileSystem, Schema } from "effect";
 import { parseDocument } from "yaml";
 import { message, PassesError } from "./errors.ts";
 
@@ -108,11 +109,11 @@ export function parseStage(source: string, file: string): Stage {
 
 const discoverStageFiles = Effect.fn((stagesDirectory: string) =>
   Effect.gen(function* () {
-    const directory = yield* Effect.tryPromise({
-      try: () => stat(stagesDirectory),
-      catch: (error) => error,
-    });
-    if (!directory.isDirectory())
+    const fs = yield* FileSystem.FileSystem;
+    const directory = yield* fs
+      .stat(stagesDirectory)
+      .pipe(Effect.mapError((error) => error.cause ?? error));
+    if (directory.type !== "Directory")
       return yield* Effect.fail(new PassesError(`${stagesDirectory}: expected a stages directory`));
     const stageFiles: string[] = [];
     const walk: (dir: string) => Effect.Effect<void, unknown, never> = Effect.fn((dir: string) =>
@@ -137,6 +138,7 @@ const discoverStageFiles = Effect.fn((stagesDirectory: string) =>
 
 export const loadPlan = Effect.fn("Stages.loadPlan")((stageDirectory: string, cwd: string) =>
   Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
     const absolute = resolve(cwd, stageDirectory);
     const stageFiles = yield* discoverStageFiles(absolute);
     if (!stageFiles.length)
@@ -150,19 +152,14 @@ export const loadPlan = Effect.fn("Stages.loadPlan")((stageDirectory: string, cw
     for (const path of stageFiles) {
       const file = relative(cwd, path) || path;
       try {
-        const source = yield* Effect.match(
-          Effect.tryPromise({
-            try: (signal) => readFile(path, { encoding: "utf8", signal }),
-            catch: (error) => new PassesError(message(error)),
-          }),
-          {
-            onFailure: (error) => {
-              errors.push(message(error));
-              return undefined;
-            },
-            onSuccess: (source) => source,
+        const source = yield* Effect.match(fs.readFile(path), {
+          onFailure: (error) => {
+            errors.push(message(error.cause ?? error));
+            return undefined;
           },
-        );
+          // Match Node's UTF-8 decoding, including preservation of a leading BOM.
+          onSuccess: (source) => Buffer.from(source).toString("utf8"),
+        });
         if (source === undefined) continue;
         const stage = parseStage(source, file);
         const duplicate = stageNames.get(stage.name);
@@ -200,6 +197,7 @@ export const loadPlan = Effect.fn("Stages.loadPlan")((stageDirectory: string, cw
         .map(([step, layerStages]) => ({ step, stages: layerStages })),
     };
   }).pipe(
+    Effect.provide(fileSystemLayer),
     Effect.mapError((error) =>
       error instanceof PassesError
         ? error

@@ -68,6 +68,7 @@ describe("stage configuration through the CLI", () => {
   test.each([
     { label: "missing frontmatter", source: "No frontmatter", context: "frontmatter" },
     { label: "leading newline", source: `\n${document()}`, context: "frontmatter" },
+    { label: "two leading BOMs", source: `\uFEFF\uFEFF${document()}`, context: "frontmatter" },
     {
       label: "missing opening fence",
       source: document().replace(/---\n/, ""),
@@ -220,6 +221,22 @@ describe("stage configuration through the CLI", () => {
 
 describe("stage discovery through validate", () => {
   test(
+    "accepts a symlink to the supplied stage directory while ignoring broken entries",
+    async () => {
+      const ws = workspace({ git: false, codex: false });
+      stage(ws, "a.md", { name: "Linked root" });
+      symlinkSync(ws.stages, join(ws.cwd, "linked-stages"));
+      symlinkSync(join(ws.stages, "missing"), join(ws.stages, "broken.md"));
+      const result = await launch(ws, ["validate", "linked-stages"]).result;
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("1 stages, 1 layers");
+      expect(result.stdout).toContain("Linked root");
+      expect(events(ws)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
     "discovers nested Markdown, ignores symlinks and other files, and displays numeric layers in filename order",
     async () => {
       const ws = workspace({ git: false, codex: false });
@@ -307,6 +324,10 @@ describe("stage discovery through validate", () => {
       const result = await launch(ws, ["run", directory]).result;
       expect(result.code).toBe(1);
       expect(result.stderr).toMatch(message);
+      if (directory === "missing") {
+        expect(result.stderr).toContain("ENOENT");
+        expect(result.stderr).toContain(join(ws.cwd, directory));
+      }
       expect(events(ws)).toEqual([]);
     },
     timeout,
