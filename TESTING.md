@@ -312,3 +312,35 @@ installation, frozen pnpm lockfile validation, repository sync, and
 bundled stage validation report eight stages in eight layers. No live model
 calls were made. `git diff --check` and the final documentation formatting check
 also passed.
+
+## Non-Effect boundary isolation
+
+Reviewed the pinned Effect 4.0.1 schema decoders, filesystem implementation,
+YAML parser, and the installed YAML 2.9.0 parser/conversion implementation.
+`Schema.decodeUnknownSync` calls `Effect.runSyncExit` internally. Stage, scope,
+and model-catalog validation now use `Schema.decodeUnknownEffect` directly;
+configuration failures are collected with `Effect.result`, which leaves
+interruption and defects in the Effect runtime.
+
+Before → After: exception-based stage/catalog orchestration and nested schema
+runtime exits → Effect validation and explicit typed failures, with individual
+`Effect.try` boundaries for YAML parsing, YAML conversion, and JSON parsing.
+Contextual parsing, filesystem, process, terminal, and log errors retain their
+causes; aggregated configuration errors retain the individual failures too.
+
+The adopted `BunServices.layer`, abort-aware file reads, scoped file handles,
+and scoped process-group cleanup remain. Effect's directory service returns
+names only, so the single-operation Node `readdir` adapter retains Dirent flags
+and native errors. The installed Node declarations expose no abort option for
+that operation: interruption stops traversal, while the native read may finish.
+YAML parsing/conversion are synchronous operations with no abort or caller-owned
+resource to release. The CLI's signal/output callbacks and top-level
+`Effect.runCallback` remain at the application boundary; the standalone repository
+maintenance script and Bun test fixtures retain their own entrypoints. Core
+source contains no `runPromise`, `runSync`, or synchronous schema decoder calls.
+
+Verified on macOS with Bun 1.4.2: `bun run check` (typecheck, lint, formatting,
+140 passing tests, and build), followed by typecheck, lint, formatting, and
+`git diff --check` after the final source edits. The affected stage suite passed
+again (73 tests). Source and bundled CLI validation each reported eight stages
+in eight layers; final documentation formatting and diff checks passed.

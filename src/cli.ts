@@ -66,10 +66,9 @@ const main = Effect.fn("Cli.main")(() =>
         }
         if (scopeOverride !== undefined)
           return yield* Effect.fail(new PassesError("--scope may be supplied only once"));
-        scopeOverride = yield* Effect.try({
-          try: () => parseScope(args[index + 1]),
-          catch: (error) => new PassesError(`--scope: ${message(error)}`),
-        });
+        scopeOverride = yield* parseScope(args[index + 1]).pipe(
+          Effect.mapError((cause) => new PassesError(`--scope: ${message(cause)}`, { cause })),
+        );
         index += 1;
       }
       const [cliCommand, stagesDirectory] = positionalArguments;
@@ -113,7 +112,9 @@ const main = Effect.fn("Cli.main")(() =>
           queueMicrotask(() => interrupt());
         },
       ).pipe(
-        Effect.mapError((error) => new PassesError(`Could not create run log: ${message(error)}`)),
+        Effect.mapError(
+          (cause) => new PassesError(`Could not create run log: ${message(cause)}`, { cause }),
+        ),
       );
       activeRunReporter = runReporter;
       reporter = runReporter.reporter;

@@ -88,57 +88,56 @@ export const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
             });
           }),
         );
-        const processModelCatalogLine = Effect.fn((line: string) =>
-          Effect.gen(function* () {
+        const processModelCatalogLine = Effect.fn(
+          function* (line: string) {
             if (!line.trim()) return true;
-            const action = yield* Effect.try({
-              try: () => {
-                const response: unknown = JSON.parse(line);
-                if (!response || typeof response !== "object")
-                  throw new Error("invalid JSON-RPC message");
-                const rpc = response as Record<string, unknown>;
-                if (rpc.id !== requestId) return { kind: "ignore" as const };
-                if (rpc.error) throw new Error(JSON.stringify(rpc.error));
-                if (!("result" in rpc)) throw new Error("response has no result");
-                if (!initialized) {
-                  initialized = true;
-                  return { kind: "initialized" as const };
-                }
-                const catalogPage = Schema.decodeUnknownSync(ModelCatalogPage)(rpc.result);
-                catalogModels.push(...catalogPage.data);
-                if (catalogPage.nextCursor) {
-                  if (cursors.has(catalogPage.nextCursor))
-                    throw new Error("server repeated its pagination cursor");
-                  cursors.add(catalogPage.nextCursor);
-                  if (cursors.size > 100) throw new Error("catalog exceeded 100 pages");
-                  return { kind: "page" as const, cursor: catalogPage.nextCursor };
-                }
-                if (!catalogModels.length)
-                  throw new Error(
-                    "server returned no models; check Codex installation/provider configuration",
-                  );
-                return { kind: "complete" as const, catalog: [...catalogModels] };
-              },
-              catch: (error) =>
-                new PassesError(
-                  `Codex model catalog: ${message(error)}${stderr ? `\n${stderr.trim()}` : ""}`,
-                ),
+            const response: unknown = yield* Effect.try({
+              try: () => JSON.parse(line),
+              catch: (error) => error,
             });
-            switch (action.kind) {
-              case "ignore":
-                return true;
-              case "initialized":
-                yield* sendRpcRequest({ method: "initialized", params: {} });
-                yield* requestModelCatalogPage();
-                return true;
-              case "page":
-                yield* requestModelCatalogPage(action.cursor);
-                return true;
-              case "complete":
-                catalog = action.catalog;
-                return false;
+            if (!response || typeof response !== "object")
+              return yield* Effect.fail(new PassesError("invalid JSON-RPC message"));
+            const rpc = response as Record<string, unknown>;
+            if (rpc.id !== requestId) return true;
+            if (rpc.error)
+              return yield* Effect.fail(
+                new PassesError(JSON.stringify(rpc.error), { cause: rpc.error }),
+              );
+            if (!("result" in rpc))
+              return yield* Effect.fail(new PassesError("response has no result"));
+            if (!initialized) {
+              initialized = true;
+              yield* sendRpcRequest({ method: "initialized", params: {} });
+              yield* requestModelCatalogPage();
+              return true;
             }
-          }),
+            const catalogPage = yield* Schema.decodeUnknownEffect(ModelCatalogPage)(rpc.result);
+            catalogModels.push(...catalogPage.data);
+            if (catalogPage.nextCursor) {
+              if (cursors.has(catalogPage.nextCursor))
+                return yield* Effect.fail(new PassesError("server repeated its pagination cursor"));
+              cursors.add(catalogPage.nextCursor);
+              if (cursors.size > 100)
+                return yield* Effect.fail(new PassesError("catalog exceeded 100 pages"));
+              yield* requestModelCatalogPage(catalogPage.nextCursor);
+              return true;
+            }
+            if (!catalogModels.length)
+              return yield* Effect.fail(
+                new PassesError(
+                  "server returned no models; check Codex installation/provider configuration",
+                ),
+              );
+            catalog = [...catalogModels];
+            return false;
+          },
+          Effect.mapError(
+            (cause) =>
+              new PassesError(
+                `Codex model catalog: ${message(cause)}${stderr ? `\n${stderr.trim()}` : ""}`,
+                { cause },
+              ),
+          ),
         );
         const processModelCatalogChunk = Effect.fn((chunk: string) =>
           Effect.gen(function* () {
@@ -177,7 +176,8 @@ export const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
     ),
   Effect.timeout("15 seconds"),
   Effect.mapError(
-    (error) => new PassesError(`Could not check Codex model compatibility: ${message(error)}`),
+    (cause) =>
+      new PassesError(`Could not check Codex model compatibility: ${message(cause)}`, { cause }),
   ),
 );
 

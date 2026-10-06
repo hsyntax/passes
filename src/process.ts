@@ -28,12 +28,14 @@ export const startProcess = Effect.fn(
       stdout: "pipe",
       stderr: "pipe",
     }).pipe(
-      Effect.mapError((error) => new PassesError(`Could not start ${command}: ${message(error)}`)),
+      Effect.mapError(
+        (cause) => new PassesError(`Could not start ${command}: ${message(cause)}`, { cause }),
+      ),
     ),
 );
 
 export const waitForExit = Effect.fn("Process.waitForExit")((proc: ChildProcessHandle) =>
-  proc.exitCode.pipe(Effect.mapError((error) => new PassesError(message(error)))),
+  proc.exitCode.pipe(Effect.mapError((cause) => new PassesError(message(cause), { cause }))),
 );
 
 function captureOutputTail<E, R>(stream: Stream.Stream<Uint8Array, E, R>, limit: number) {
@@ -65,14 +67,16 @@ export const runCommand = Effect.fn("Process.runCommand")(
           Effect.timeout("1 second"),
           Effect.mapError(
             (error) =>
-              new PassesError(`${command}: ${message(error)} while draining child process output`),
+              new PassesError(`${command}: ${message(error)} while draining child process output`, {
+                cause: error,
+              }),
           ),
         );
         return { code, signal: null, stdout: stdout.contents(), stderr: stderr.contents() };
       }),
     ).pipe(
       Effect.timeout("10 seconds"),
-      Effect.mapError((error) => new PassesError(`${command}: ${message(error)}`)),
+      Effect.mapError((cause) => new PassesError(`${command}: ${message(cause)}`, { cause })),
     ),
 );
 

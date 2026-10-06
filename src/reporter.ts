@@ -26,7 +26,7 @@ const writeTerminal = Effect.fn((line: string, stream: "stdout" | "stderr") =>
       stream === "stderr" ? stdio.stderr() : stdio.stdout(),
     ).pipe(
       Effect.mapError(
-        (error) => new PassesError(`Could not write to ${stream}: ${message(error)}`),
+        (cause) => new PassesError(`Could not write to ${stream}: ${message(cause)}`, { cause }),
       ),
     );
   }),
@@ -47,7 +47,7 @@ export const createRunReporter = Effect.fn("Reporter.createRunReporter")(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const home = yield* Effect.sync(() => homedir());
+      const home = yield* Effect.sync(homedir);
       const stateHome = process.env.XDG_STATE_HOME || path.join(home, ".local", "state");
       if (!path.isAbsolute(stateHome))
         return yield* Effect.fail(new PassesError("XDG_STATE_HOME must be an absolute path"));
@@ -88,7 +88,11 @@ export const createRunReporter = Effect.fn("Reporter.createRunReporter")(
       const reportLogFailure = (error: unknown) => {
         if (failed) return;
         failed = true;
-        onFailure(new PassesError(`Could not write run log ${logPath}: ${message(error)}`));
+        onFailure(
+          new PassesError(`Could not write run log ${logPath}: ${message(error)}`, {
+            cause: error,
+          }),
+        );
       };
       const record = Effect.fn((line: string, includeTail = false) =>
         lock.withPermit(

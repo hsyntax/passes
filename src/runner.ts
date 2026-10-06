@@ -44,9 +44,10 @@ const runStage = Effect.fn("Runner.runStage")(
         yield* Effect.all([Fiber.join(stdoutFiber), Fiber.join(stderrFiber)]).pipe(
           Effect.timeout("1 second"),
           Effect.mapError(
-            () =>
+            (cause) =>
               new PassesError(
                 `${stage.name}: Codex exited but a descendant kept its output pipe open; cancelling the process group`,
+                { cause },
               ),
           ),
         );
@@ -102,9 +103,10 @@ const pushPendingCommits = Effect.fn("Runner.pushPendingCommits")(
         yield* Effect.all([Fiber.join(stdoutFiber), Fiber.join(stderrFiber)]).pipe(
           Effect.timeout("1 second"),
           Effect.mapError(
-            () =>
+            (cause) =>
               new PassesError(
                 "git push exited but a descendant kept its output pipe open; check the remote before retrying.",
+                { cause },
               ),
           ),
         );
