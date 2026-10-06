@@ -19,7 +19,7 @@
     "repos:sync": "bun scripts/sync-repos.ts"
   },
   "dependencies": {
-    "effect": "4.0.0",
+    "effect": "4.0.1",
     "yaml": "2.9.0"
   },
   "devDependencies": {
