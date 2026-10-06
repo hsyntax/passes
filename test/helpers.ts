@@ -167,6 +167,9 @@ export function launch(ws: Workspace, args: readonly string[] = ["run", "stages"
     get stdout() {
       return captured.stdout;
     },
+    get stderr() {
+      return captured.stderr;
+    },
   };
 }
 

@@ -100,8 +100,10 @@ describe("run logging", () => {
     "shows a bounded failure excerpt while retaining the full output",
     async () => {
       const ws = workspace();
-      const lines = Array.from({ length: 100 }, (_, index) => `diagnostic ${index}`).join("\n");
-      stage(ws, "stage.md", { prompt: directive("fail", { stderr: lines, exitCode: 17 }) });
+      const lines = Array.from({ length: 100 }, (_, index) => `diagnostic ${index}`);
+      stage(ws, "stage.md", {
+        prompt: directive("fail", { stderr: lines.join("\n"), exitCode: 17 }),
+      });
       const result = await launch(ws).result;
       expect(result.code).toBe(1);
       expect(result.stderr).toContain("exit code 17");
@@ -109,9 +111,14 @@ describe("run logging", () => {
       expect(result.stderr).toContain("diagnostic 99");
       expect(result.stderr).not.toContain("diagnostic 0\n");
       expect(result.stderr.length).toBeLessThan(9_000);
+      const diagnostics = (text: string) =>
+        [...text.matchAll(/diagnostic \d+/g)].map(([line]) => line);
+      const excerpt = diagnostics(result.stderr);
+      expect(excerpt.length).toBeGreaterThan(0);
+      expect(excerpt.length).toBeLessThanOrEqual(20);
+      expect(excerpt).toEqual(lines.slice(-excerpt.length));
       const log = readFileSync(logPath(result.stdout), "utf8");
-      expect(log).toContain("diagnostic 0\n");
-      expect(log).toContain("diagnostic 99");
+      expect(diagnostics(log)).toEqual(lines);
       expect(log).toContain("exit code 17");
     },
     timeout,
@@ -121,14 +128,27 @@ describe("run logging", () => {
     "verbose streams both channels and still saves the complete log",
     async () => {
       const ws = workspace();
+      const release = join(ws.root, "release-verbose");
       stage(ws, "stage.md", {
         prompt: directive("verbose", {
           stdout: "live stdout\n",
           stderr: "live stderr\n",
           exitCode: 1,
+          releaseFile: release,
         }),
       });
-      const result = await launch(ws, ["run", "stages", "--verbose"]).result;
+      const execution = launch(ws, ["run", "stages", "--verbose"]);
+      await waitFor(
+        () => execution.stdout.includes("live stdout") && execution.stderr.includes("live stderr"),
+        "both verbose channels before stage exit",
+      );
+      expect(execution.child.exitCode).toBeNull();
+      expect(events(ws).some((event) => event.kind === "finish")).toBe(false);
+      expect(events(ws).some((event) => event.kind === "fixture-timeout")).toBe(false);
+      expect(execution.stdout).not.toContain("live stderr");
+      expect(execution.stderr).not.toContain("live stdout");
+      writeFileSync(release, "release");
+      const result = await execution.result;
       expect(result.code).toBe(1);
       expect(result.stdout).toContain("live stdout");
       expect(result.stderr).toContain("live stderr");

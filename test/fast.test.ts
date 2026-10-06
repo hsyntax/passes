@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { cleanup, events, launch, stage, timeout, workspace } from "./helpers.ts";
+import { join } from "node:path";
+import { cleanup, directive, events, launch, stage, timeout, workspace } from "./helpers.ts";
 
 afterEach(cleanup);
 
@@ -9,37 +10,57 @@ describe("runner fast mode", () => {
     "requests fast mode for every supported stage across layers and keeps reasoning effort",
     async () => {
       const ws = workspace();
-      const models = [
-        "priority-model",
-        "fast-model",
-        "legacy-model",
-        "standard-model",
-        "unknown-model",
+      // Expected selections come from the requested stages, not the observed argv.
+      const selections = [
+        { model: "priority-model", fast: true },
+        { model: "fast-model", fast: true },
+        { model: "legacy-model", fast: true },
+        { model: "standard-model", fast: false },
+        { model: "unadvertised-model", fast: false },
+        { model: "priority-model", fast: true },
       ];
-      ws.env.PASSES_TEST_MODELS = JSON.stringify(models);
+      ws.env.PASSES_TEST_MODELS = JSON.stringify([
+        ...new Set(selections.map(({ model }) => model)),
+      ]);
       ws.env.PASSES_TEST_MODEL_TIERS = JSON.stringify({
         "priority-model": { serviceTiers: [{ id: "priority", name: "Fast", description: "" }] },
         "fast-model": { serviceTiers: [{ id: "fast", name: "Fast", description: "" }] },
         "legacy-model": { serviceTiers: [], additionalSpeedTiers: ["fast"] },
-        "standard-model": { serviceTiers: [{ id: "standard", name: "Standard", description: "" }] },
+        "standard-model": {
+          serviceTiers: [{ id: "standard", name: "Standard", description: "" }],
+          additionalSpeedTiers: ["fast"],
+        },
       });
-      for (const [index, model] of [...models, models[0]!].entries()) {
-        stage(ws, `stage-${index}.md`, { model, effort: "high", step: index % 2 });
+      for (const [index, { model }] of selections.entries()) {
+        stage(ws, `stage-${index}.md`, {
+          model,
+          effort: "high",
+          step: index % 2,
+          prompt: `Review stage ${index}.\n`,
+        });
       }
       const result = await launch(ws, ["run", "stages", "--fast", "--scope", "pr", "--verbose"])
         .result;
       expect(result.code).toBe(0);
       const starts = events(ws).filter((event) => event.kind === "start");
-      expect(starts).toHaveLength(6);
-      for (const start of starts) {
-        const args = start.args ?? [];
-        const model = args[args.indexOf("--model") + 1];
-        const supported = ["priority-model", "fast-model", "legacy-model"].includes(model ?? "");
+      expect(starts).toHaveLength(selections.length);
+      for (const [index, { model, fast }] of selections.entries()) {
+        const matching = starts.filter((start) =>
+          start.prompt?.startsWith(`Scope: pr\n\nReview stage ${index}.\n`),
+        );
+        expect(matching).toHaveLength(1);
+        const args = matching[0]?.args ?? [];
+        expect(args).toContain("--model");
+        expect(args[args.indexOf("--model") + 1]).toBe(model);
         const configs = args.flatMap((arg, index) => (arg === "-c" ? [args[index + 1]] : []));
+        const features = args.flatMap((arg, index) =>
+          arg === "--enable" ? [args[index + 1]] : [],
+        );
         expect(configs).toContain('model_reasoning_effort="high"');
-        expect(configs.includes('service_tier="fast"')).toBe(supported);
-        expect(args.includes("fast_mode")).toBe(supported);
-        expect(start.prompt).toStartWith("Scope: pr\n\n");
+        expect(configs.filter((config) => config?.startsWith("service_tier="))).toEqual(
+          fast ? ['service_tier="fast"'] : [],
+        );
+        expect(features.includes("fast_mode")).toBe(fast);
       }
       expect(events(ws).find((event) => event.kind === "app-server")?.args).toContain("fast_mode");
       expect(result.stdout).toContain("priority-model: fast mode requested.");
@@ -47,7 +68,7 @@ describe("runner fast mode", () => {
         "standard-model: fast mode not advertised; using Codex defaults.",
       );
       expect(result.stdout).toContain(
-        "unknown-model: fast mode not advertised; using Codex defaults.",
+        "unadvertised-model: fast mode not advertised; using Codex defaults.",
       );
       const path = /^Log: (.+)$/m.exec(result.stdout)?.[1];
       expect(path).toBeDefined();
@@ -120,11 +141,17 @@ describe("runner fast mode", () => {
       ws.env.PASSES_TEST_MODEL_TIERS = JSON.stringify({
         "mock-model": { serviceTiers: [{ id: "priority" }] },
       });
-      stage(ws, "stage.md", { prompt: 'fixture:{"id":"failure","exitCode":17}\n' });
+      stage(ws, "stage.md", {
+        prompt: directive("failure", {
+          exitCode: 17,
+          appendFile: { path: "attempts.txt", content: "stage edit\n" },
+        }),
+      });
       const result = await launch(ws, ["run", "stages", "--fast"]).result;
       expect(result.code).toBe(1);
       expect(result.stderr).toContain("exit code 17");
       expect(events(ws).filter((event) => event.kind === "start")).toHaveLength(1);
+      expect(readFileSync(join(ws.cwd, "attempts.txt"), "utf8")).toBe("stage edit\n");
     },
     timeout,
   );

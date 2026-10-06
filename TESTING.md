@@ -93,6 +93,20 @@ when concurrency was raised above four, a layer was serialized, or commits were
 pushed before stage execution. The concurrency check also passed with reversed
 stage scheduling order. Production sources were untouched by these probes.
 
+The latest PR test review checked all five test files and their fixtures. Fast-mode
+expectations now match each requested stage to its model and literal expected
+selection, including current tier metadata taking precedence over legacy metadata.
+The failed-stage test also checks that its file edit occurs only once. Logging
+tests enforce the documented 20-line excerpt limit, preserve every diagnostic in
+the full log, and observe both verbose channels before releasing the stage.
+
+Four mutation probes in temporary source copies passed the previous tests and
+failed the revised tests: substituting another fast-capable model, letting legacy
+tiers override current metadata, expanding excerpts to 50 lines, and buffering
+verbose output until exit. The unmodified implementation passed `bun run check`
+(typecheck, lint, formatting, all 129 tests, and build). `git diff --check` also
+passed. No production source was changed by this review.
+
 ## Stage guidance verification
 
 The ecosystem-package stage runs before boundary isolation and uses `gpt-6.1-sol`
