@@ -7,6 +7,12 @@ reasoning_effort: high
 
 Identify and eliminate N+1 queries and repeated external requests using batched database queries and Effect RequestResolver where appropriate. Preserve authorization boundaries, transaction semantics, result ordering, errors, and cancellation. Bound batch sizes and concurrency; avoid batching dependent operations. Verify improvements through query/request counts or representative benchmarks.
 
+Use existing functions directly; avoid unnecessary wrappers.
+
+Style for these rewrites: use a direct call for one operation; use `pipe` for two or more chained operations, with at most five calls per chain outside generators. Inside generators, combine transformations of the same value before yielding; keep dependent actions separate.
+
+When needed, consult the target repository's vendored `repos/effect` source and pinned version.
+
 ## Judgment examples
 
 Good rewrite, only for independent reads with equivalent authorization, snapshot,

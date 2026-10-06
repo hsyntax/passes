@@ -53,8 +53,7 @@ source tag were checked. The offline Mac's `repos/effect` checkout was not inspe
 
 The Array and sequential Effect snippets passed strict TypeScript checks and focused
 runtime checks: 1,050 chunking comparisons, empty/invalid-size/domain boundaries,
-sequential ordering and failure, interruption with scoped cleanup, and the
-premature-resource-release counterexample. The database batching example is
+sequential ordering and failure, and interruption with scoped cleanup. The database batching example is
 illustrative pseudocode, not a database benchmark or a verified resolver rewrite.
 
 ## Codex checks
