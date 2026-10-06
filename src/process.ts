@@ -35,8 +35,7 @@ export const startProcess = Effect.fn(
         stdout: "pipe",
         stderr: "pipe",
       }),
-      // Effect 4.0.0's automatic cleanup only sends TERM after a nonzero exit.
-      // Explicit kill still escalates for surviving descendants after the leader exits.
+      // Explicitly escalate cleanup for surviving descendants after the leader exits.
       (proc) => proc.kill({ forceKillAfter: FORCE_KILL_AFTER }).pipe(Effect.ignore),
     ).pipe(
       Effect.mapError((error) => new PassesError(`Could not start ${command}: ${message(error)}`)),

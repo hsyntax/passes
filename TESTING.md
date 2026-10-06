@@ -119,8 +119,8 @@ Node decoding preserves the existing BOM behavior and native error causes keep
 the existing diagnostics. Directory-entry traversal, YAML parsing, and subprocess
 cleanup remain because the candidate replacements would change those contracts.
 
-Both lockfiles pin `@effect/platform-node-shared` 4.0.0 with Effect 4.0.0;
-the shared package's peer range is `^4.0.0`. Repository sync verifies both
+Both lockfiles pin `@effect/platform-node-shared` 4.0.1 with Effect 4.0.1;
+the shared package's peer range is `^4.0.1`. Repository sync verifies both
 manifests in the same release tree. The added CLI tests reject repeated leading
 BOMs and accept a symlink as the supplied directory while ignoring broken links
 inside it. The missing-directory test also checks the native errno and path.
@@ -211,7 +211,7 @@ an installed user-provided Effect rewrite skill. It deliberately omits broader b
 and formatting advice, while retaining essential composition and observable-behavior
 constraints. It does not include the earlier rewrite examples.
 
-The frozen dependency remains `effect@4.0.0`. The redundant-I/O stage directs
+The frozen dependency is `effect@4.0.1`. The redundant-I/O stage directs
 agents to establish a baseline, remove unnecessary external operations, and verify
 improvements while preserving behavior and intentional concurrency. It covers
 database queries, API requests, file reads, and subprocess calls, and permits

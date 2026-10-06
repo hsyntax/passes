@@ -280,7 +280,7 @@ working tree. See `TESTING.md`.
 Runtime dependencies are Effect v4, `@effect/platform-node-shared`, and `yaml`.
 Stage reads and directory checks use Effect's filesystem service with the shared
 implementation that also backs `@effect/platform-bun/BunFileSystem`. Both Effect
-packages are pinned to 4.0.0. `bun run repos:sync` verifies both packages against
+packages are pinned to 4.0.1. `bun run repos:sync` verifies both packages against
 the vendored release tree.
 
 Discovery keeps Node's directory entries to ignore symlinks without extra file
