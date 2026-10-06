@@ -14,6 +14,7 @@ interface Directive {
   hold?: boolean;
   ignoreTerm?: boolean;
   spawnDescendant?: boolean;
+  outputBytewise?: boolean;
   stdout?: string;
   stderr?: string;
   appendFile?: { path: string; content: string };
@@ -103,10 +104,9 @@ if (args[0] === "--version") {
           hidden: false,
           isDefault: index === 0,
           defaultReasoningEffort: "medium",
-          supportedReasoningEfforts: [
-            { reasoningEffort: "medium", description: "" },
-            { reasoningEffort: "high", description: "" },
-          ],
+          supportedReasoningEfforts: (
+            JSON.parse(process.env.PASSES_TEST_EFFORTS ?? '["medium", "high"]') as string[]
+          ).map((reasoningEffort) => ({ reasoningEffort, description: "" })),
           inputModalities: ["text"],
           supportsPersonality: false,
         })),
@@ -167,8 +167,19 @@ if (args[0] === "--version") {
         ) ?? false,
     );
   }
-  if (directive.stdout) process.stdout.write(directive.stdout);
-  if (directive.stderr) process.stderr.write(directive.stderr);
+  async function output(stream: NodeJS.WriteStream, text: string | undefined) {
+    if (!text) return;
+    if (directive.outputBytewise) {
+      for (const byte of Buffer.from(text)) {
+        stream.write(Buffer.from([byte]));
+        // Exercise decoding across writes, without making the assertion depend
+        // on timing or on how the OS groups the pipe's bytes.
+        await Bun.sleep(2);
+      }
+    } else stream.write(text);
+  }
+  await output(process.stdout, directive.stdout);
+  await output(process.stderr, directive.stderr);
   if (directive.hold) {
     setInterval(() => {}, 1_000);
   } else {

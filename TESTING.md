@@ -1,13 +1,14 @@
 # Verification
 
-The original baseline was verified on Linux and macOS (Darwin arm64) with Bun 1.4.2.
-The stage examples, scope option, and commit-prompt changes were verified on Linux with Bun 1.4.2;
-the updated suite has not been rerun on macOS. The macOS test fixture
-canonicalizes temporary directories with `realpathSync` so `/var` and
-`/private/var` aliases compare correctly.
+The revised suite was verified on macOS (Darwin arm64) with Bun 1.4.2.
+The original baseline was also verified on Linux. Earlier stage examples, scope,
+and commit-prompt changes were verified on Linux with Bun 1.4.2; the revised suite
+has not been rerun on Linux. The macOS fixture canonicalizes temporary directories
+with `realpathSync` so `/var` and `/private/var` aliases compare correctly.
 
-Bun 1.4.2 or newer is required to install the included lockfile. All tests use
-a fake Codex executable and temporary repositories; they make no model calls.
+Bun 1.4.2 or newer is required to install the included lockfile. Tests use
+temporary workspaces and, for execution, real Git repositories and a fake Codex
+executable. They make no model calls.
 
 To repeat installation and verification from the project directory:
 
@@ -20,30 +21,47 @@ bun dist/passes.js validate stages
 
 ## Automated checks
 
-- 109 tests passing, 414 assertions, zero failures
+- 102 CLI behavior tests passing, zero failures
 - Strict TypeScript typecheck passing
 - Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
 - Repository stage validation passing through the source and bundled CLI (6 stages, 6 layers)
 
-The 80 parser/unit tests cover required fields, unknown fields, malformed and
-ambiguous YAML, duplicate YAML keys, invalid numeric values, quoted numbers,
-control characters, BOM/CRLF, literal prompt preservation, empty prompts,
-recursive deterministic discovery, symlink cycles, name/slug collisions, numeric
-layer ordering, graph barriers, safe argv, split UTF-8 output, optional scope,
-literal scope preservation, invalid scope values, and invocation scope precedence.
+Tests invoke the documented CLI without importing implementation modules. They
+check exit codes, diagnostics, layer graphs, filesystem effects, and the argv and
+stdin received by a fake Codex executable at the external process boundary.
+Expected prompt text comes from the documented contract, independently of the
+implementation. Git is real; repositories and fixture settings are temporary.
+The subprocess environment excludes inherited Git configuration and Codex fixture
+settings. Validation, help, and version are also exercised with neither Git nor
+Codex on PATH. A focused run with deliberately conflicting ambient Git and fixture
+variables passed all four selected tests.
 
-The 29 black-box CLI tests cover invalid plans never launching Codex, real
-concurrency verified by file barriers, later-step barriers, model/effort/argv and
-stdin preservation, nested cwd, dirty file preservation, stdout/stderr labels,
-nonzero failure stopping advancement, sibling and descendant cancellation,
-TERM-ignoring subprocesses, exact SIGINT/SIGTERM exit codes, unsupported models
-and efforts (including a later layer), old CLI versions, malformed catalogs,
-pagination, omitted/repeated cursors, and interrupted preflight cleanup. Prompt
-checks verify the optional `Scope: <value>` first line, CLI override behavior,
-literal Markdown preservation, and standard commit instructions appended exactly
-once to every stage invocation. Tests do
-not rely on a real model to interpret those instructions or create a commit.
+Configuration cases cover required fields, a generic unknown field, malformed and
+ambiguous YAML, duplicate keys, invalid numeric values, control characters,
+BOM/CRLF, literal bodies and scope, empty prompts, recursive deterministic
+discovery, internal/external symlinks and cycles, name collisions, and numeric
+layer ordering. Scope delivery checks cover frontmatter, invocation precedence,
+unscoped stages, and exact preservation of literal shell text and whitespace.
+Commit instructions are checked in the stdin actually delivered to Codex.
+
+Execution cases cover preflight rejection before any stage starts, paginated and
+malformed catalogs, missing/repeated cursors, unsupported models and efforts,
+concurrent stages and layer barriers, nested invocation directories, dirty file
+preservation, argument escaping, failure diagnostics, cancellation, and cleanup
+of TERM-ignoring siblings and descendants. Streaming checks exercise bytewise
+Unicode output, stdout/stderr labels, long output arriving before process exit,
+and partial lines preserved on interruption. They do not depend on internal
+chunk sizes, helper names, or exact RPC call counts.
+
+Five mutation probes in temporary source copies confirmed that the relevant tests
+fail when scope overrides are ignored, bodies are trimmed, split UTF-8 is decoded
+independently, long output is buffered until exit, or a concurrent layer is
+serialized. The original sources were restored between probes; production code
+was not changed by this review.
+
+These tests verify delivery of model instructions. They do not use a real model
+to interpret the instructions or create a commit.
 
 ## Stage guidance verification
 

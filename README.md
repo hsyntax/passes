@@ -207,7 +207,7 @@ stage or automatic rollback is imposed.
 ## Development
 
 ```sh
-bun test             # parser/discovery/unit + stubbed CLI integration tests
+bun test             # CLI behavior tests with a fake Codex executable
 bun run typecheck    # TypeScript strict mode
 bun run lint         # Oxlint checks
 bun run lint:fix     # apply Oxlint fixes
@@ -217,9 +217,11 @@ bun run build        # bundled Bun entry point
 bun run check        # typecheck, lint, formatting check, tests, and build
 ```
 
-All tests use temporary Git repositories and a fake Codex executable placed first
-on the subprocess `PATH`. They make no inference requests, configure no real
-account, and do not modify a user's Git working tree. See `TESTING.md`.
+Tests exercise the CLI in temporary workspaces, using real Git repositories and a
+fake Codex executable for execution. The subprocess `PATH` exposes only the chosen
+tools; validation, help, and version also run without Git or Codex. Tests make no
+inference requests, configure no real account, and do not modify a user's Git
+working tree. See `TESTING.md`.
 
 Runtime dependencies are Effect v4 and `yaml`. The project deliberately avoids
 worktree libraries, databases, external services, or a second workflow format.

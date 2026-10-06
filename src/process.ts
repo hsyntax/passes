@@ -14,21 +14,6 @@ export interface ManagedProcess {
   readonly closed: Promise<void>;
 }
 
-const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-async function waitBounded(promise: Promise<unknown>, ms: number): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      promise,
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, ms);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
 function signalGroup(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
   if (!child.pid) return;
   try {
@@ -76,20 +61,26 @@ export function startProcess(command: string, args: readonly string[], cwd: stri
       catch: (error) => new PassesError(`Could not start ${command}: ${message(error)}`),
     }),
     ({ child, result, closed }) =>
-      Effect.promise(async () => {
+      Effect.gen(function* () {
         child.stdin.destroy();
-        try {
-          if (groupExists(child)) {
-            signalGroup(child, "SIGTERM");
-            const until = Date.now() + GRACE_MS;
-            while (groupExists(child) && Date.now() < until) await delay(20);
-            if (groupExists(child)) signalGroup(child, "SIGKILL");
-          }
-          await waitBounded(Promise.all([result.catch(() => undefined), closed]), 1_000);
-        } finally {
-          child.stdout.destroy();
-          child.stderr.destroy();
-        }
+        yield* Effect.ensuring(
+          Effect.gen(function* () {
+            if (groupExists(child)) {
+              signalGroup(child, "SIGTERM");
+              const until = Date.now() + GRACE_MS;
+              while (groupExists(child) && Date.now() < until) yield* Effect.sleep(20);
+              if (groupExists(child)) signalGroup(child, "SIGKILL");
+            }
+            yield* Effect.promise(() => Promise.all([result.catch(() => undefined), closed])).pipe(
+              Effect.timeoutOption(1_000),
+              Effect.asVoid,
+            );
+          }),
+          Effect.sync(() => {
+            child.stdout.destroy();
+            child.stderr.destroy();
+          }),
+        );
       }),
   );
 }
