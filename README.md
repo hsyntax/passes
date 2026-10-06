@@ -53,11 +53,12 @@ Adapt the example stages to your files before running them.
 
 ## Repository stages
 
-The included `stages` directory runs three sequential passes:
+The included `stages` directory runs four sequential passes:
 
 1. Step 0: Clean up tests (`gpt-6.1-sol`, `high`)
 2. Step 1: Apply Effect modules (`gpt-6-luna`, `xhigh`), including composition and behavior preservation
 3. Step 2: Improve data-access performance (`gpt-6-luna`, `high`)
+4. Step 3: Align domain names (`gpt-6-luna`, `high`), using established vocabulary within each bounded context
 
 ## Stage format
 

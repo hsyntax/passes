@@ -24,7 +24,7 @@ bun dist/passes.js validate stages
 - Strict TypeScript typecheck passing
 - Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
-- Repository stage validation passing through the source and bundled CLI (3 stages, 3 layers)
+- Repository stage validation passing through the source and bundled CLI (4 stages, 4 layers)
 
 The 80 parser/unit tests cover required fields, unknown fields, malformed and
 ambiguous YAML, duplicate YAML keys, invalid numeric values, quoted numbers,
@@ -52,11 +52,13 @@ an installed user-provided Effect rewrite skill. It deliberately omits broader b
 and formatting advice, while retaining essential composition and observable-behavior
 constraints. It does not include the earlier rewrite examples.
 
-The frozen dependency remains `effect@4.0.0`. The data-access stage's API pointers
-were checked against that version's installed source and matching public source tag.
-Its batching sketch is illustrative pseudocode, not a database benchmark or a verified
-resolver rewrite. Each Effect stage directs agents to the target repository's vendored
-`repos/effect` source and pinned version when needed.
+The frozen dependency remains `effect@4.0.0`. Data-access concepts were checked
+against that version's source and the PostgreSQL parameter/IN/ANY documentation.
+Its concise batching sketches are illustrative, not database benchmarks or verified
+resolver rewrites. Each Effect stage directs agents to the target repository's
+vendored `repos/effect` and actual database/driver documentation when relevant.
+The naming stage applies established domain vocabulary within bounded contexts and
+preserves external naming contracts; no application code was renamed in this PR.
 
 ## Codex checks
 
