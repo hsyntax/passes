@@ -277,7 +277,7 @@ tools; validation, help, and version also run without Git or Codex. Tests make n
 inference requests, configure no real account, and do not modify a user's Git
 working tree. See `TESTING.md`.
 
-Runtime dependencies are Effect v4, `@effect/platform-bun`, and `yaml`.
+Runtime dependencies are Effect v4, `@effect/platform-bun`, `gray-matter`, and `yaml`.
 The CLI provides `BunServices.layer` for platform services. Its filesystem,
 process, path, and stdio implementations reuse `@effect/platform-node-shared`.
 All three Effect packages resolve to 4.0.1; `bun run repos:sync` verifies their
@@ -288,7 +288,10 @@ checks. Its single-operation adapter preserves native errors; `readdir` has no
 abort option, so Effect interruption stops traversal without cancelling the
 pending native read. Reads use `FileSystem.readFile` and Node UTF-8 decoding to
 preserve BOMs; the service wires cancellation to the native read's abort signal.
-Stage, scope, and catalog validation use Effect schema decoders directly. YAML
+Stage, scope, and catalog validation use Effect schema decoders directly.
+`gray-matter` extracts frontmatter, with explicit checks requiring bare `---` fence
+lines and preserving the prompt body exactly. Its default YAML engine is bypassed
+so the `yaml` dependency continues to handle parsing and validation. YAML
 parsing/conversion and JSON parsing have individual exception boundaries, and
 contextual errors retain their causes. The YAML dependency retains full core-schema
 parsing, duplicate-key diagnostics, and alias/tag rejection. Effect's YAML parser

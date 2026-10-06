@@ -75,6 +75,26 @@ describe("stage configuration through the CLI", () => {
       context: "frontmatter",
     },
     { label: "missing closing fence", source: "---\nname: missing close", context: "frontmatter" },
+    {
+      label: "complete metadata without a closing fence",
+      source: `---\n${header}\n`,
+      context: "frontmatter",
+    },
+    {
+      label: "JavaScript language fence",
+      source: "---js\nthrow new Error('must not execute');\n---\nPrompt",
+      context: "frontmatter must start and end",
+    },
+    {
+      label: "closing delimiter with extra text",
+      source: `---\n${header}\n---oops\nPrompt`,
+      context: "frontmatter",
+    },
+    {
+      label: "closing delimiter with extra dashes",
+      source: `---\n${header}\n----\nPrompt`,
+      context: "frontmatter",
+    },
     { label: "blank body", source: document(header, " \r\n\t"), context: "prompt" },
     { label: "NUL in body", source: document(header, "prompt\0"), context: "prompt" },
   ])(
@@ -137,7 +157,7 @@ describe("stage configuration through the CLI", () => {
       const body = "\n# Prompt\r\n${not_a_variable}\r\n---\r\nBefore → After 🌍\r\n";
       writeFileSync(
         join(ws.stages, "windows.md"),
-        '\uFEFF---\r\nname: "  Héllo, World!  " # comment\r\nstep: 2\r\nmodel: "  mock-model  "\r\nreasoning_effort: >-\r\n  medium\r\n---\r\n' +
+        '\uFEFF--- \t\r\nname: "  Héllo, World!  " # comment\r\nstep: 2\r\nmodel: "  mock-model  "\r\nreasoning_effort: >-\r\n  medium\r\n---\t \r\n' +
           body,
       );
       const result = await launch(ws, ["run", "stages", "--verbose"]).result;

@@ -21,6 +21,7 @@
   "dependencies": {
     "@effect/platform-bun": "4.0.1",
     "effect": "4.0.1",
+    "gray-matter": "4.0.3",
     "yaml": "2.9.0"
   },
   "devDependencies": {

@@ -1,5 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { Effect, FileSystem, Path, Result, Schema } from "effect";
+import matter from "gray-matter";
 import { parseDocument } from "yaml";
 import { message, PassesError } from "./errors.ts";
 
@@ -60,15 +61,28 @@ const stageSlug = (stageName: string): string =>
     .replace(/^-|-$/g, "");
 
 const parseStage = Effect.fn(function* (source: string, file: string) {
-  const match = /^\uFEFF?---[\t ]*\r?\n([\s\S]*?)^---[\t ]*\r?$(?:\n|$)([\s\S]*)/m.exec(source);
-  // The multiline regexp allows the closing fence to anchor; enforce opening at byte zero.
-  if (!match || match.index !== 0) {
+  const text = source.startsWith("\uFEFF") ? source.slice(1) : source;
+  // Require a bare YAML fence before gray-matter can select a language engine.
+  if (!/^---[\t ]*\r?\n/.test(text)) {
+    return yield* Effect.fail(
+      new PassesError(`${file}: frontmatter must start and end with a line containing ---`),
+    );
+  }
+  const extracted = yield* Effect.try({
+    // Extract only; keep YAML parsing and conversion in their own error boundaries.
+    try: () => matter(text, { engines: { yaml: () => ({}) } }),
+    catch: (cause) => new PassesError(`${file}: frontmatter: ${message(cause)}`, { cause }),
+  });
+  // gray-matter permits missing closing fences and matches delimiter prefixes.
+  const closingOffset = 3 + extracted.matter.length;
+  const closingFence = /^\n---[\t ]*\r?(?:\n|$)/.exec(text.slice(closingOffset));
+  if (!closingFence) {
     return yield* Effect.fail(
       new PassesError(`${file}: frontmatter must start and end with a line containing ---`),
     );
   }
   const yaml = yield* Effect.try({
-    try: () => parseDocument(match[1]!, { uniqueKeys: true, strict: true, schema: "core" }),
+    try: () => parseDocument(extracted.matter, { uniqueKeys: true, strict: true, schema: "core" }),
     catch: (cause) => new PassesError(`${file}: YAML: ${message(cause)}`, { cause }),
   });
   if (yaml.errors.length || yaml.warnings.length) {
@@ -106,7 +120,7 @@ const parseStage = Effect.fn(function* (source: string, file: string) {
   if (!Number.isSafeInteger(stageFrontmatter.step)) {
     return yield* Effect.fail(new PassesError(`${file}: step must be a nonnegative safe integer`));
   }
-  const prompt = match[2]!;
+  const prompt = text.slice(closingOffset + closingFence[0].length);
   if (!prompt.trim())
     return yield* Effect.fail(new PassesError(`${file}: prompt body must not be empty`));
   if (prompt.includes("\0"))
