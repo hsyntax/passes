@@ -1,11 +1,11 @@
 ---
-name: Apply existing Effect modules
+name: Apply Effect modules
 step: 1
 model: gpt-6-luna
 reasoning_effort: xhigh
 ---
 
-Apply existing Effect functions and modules where they simplify the implementation while preserving behavior.
+Apply existing Effect functions, modules, and compositions where they simplify the implementation, make correctness easier to establish, or improve measured performance. Preserve observable behavior, including errors, interruption, concurrency, and resource lifetimes.
 
 - Use existing functions directly; avoid unnecessary wrappers or aliases.
 - Avoid hoisting a method used only once when a direct module call is clearer.

@@ -24,7 +24,7 @@ bun dist/passes.js validate stages
 - Strict TypeScript typecheck passing
 - Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
-- Repository stage validation passing through the source and bundled CLI (4 stages, 4 layers)
+- Repository stage validation passing through the source and bundled CLI (3 stages, 3 layers)
 
 The 80 parser/unit tests cover required fields, unknown fields, malformed and
 ambiguous YAML, duplicate YAML keys, invalid numeric values, quoted numbers,
@@ -47,10 +47,10 @@ not rely on a real model to interpret those instructions or create a commit.
 
 ## Stage guidance verification
 
-The module-use stage distills the relevant direct-API and abstraction guidance from
+The combined Effect stage distills the relevant direct-API and abstraction guidance from
 an installed user-provided Effect rewrite skill. It deliberately omits broader bug-fix
-and formatting advice. The composition stage retains concise correctness constraints;
-neither stage includes the earlier rewrite examples.
+and formatting advice, while retaining essential composition and observable-behavior
+constraints. It does not include the earlier rewrite examples.
 
 The frozen dependency remains `effect@4.0.0`. The data-access stage's API pointers
 were checked against that version's installed source and matching public source tag.
