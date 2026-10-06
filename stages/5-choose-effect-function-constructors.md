@@ -14,4 +14,4 @@ Choose constructors by purpose, preserving behavior and intentional observabilit
 
 Keep meaningful existing spans unless a change is justified and their observability is preserved. Do not claim a performance benefit without evidence or add Effect wrappers to pure functions.
 
-These distinctions were checked against [Effect 4.0.1 source](https://github.com/Effect-TS/effect/blob/effect@4.0.1/packages/effect/src/Effect.ts) and its [implementation](https://github.com/Effect-TS/effect/blob/effect@4.0.1/packages/effect/src/internal/effect.ts). Confirm the target repository's pinned version and vendored `repos/effect` source before applying them.
+Vendored reference in `repos/effect`.
