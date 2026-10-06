@@ -30,6 +30,22 @@ runner's source directory. Agents retain that invocation directory even if it is
 a subdirectory of the checkout. `run` requires an existing Git working tree;
 `validate` also works outside Git and never invokes Git or Codex.
 
+`run` saves a separate log for each execution and prints concise stage progress,
+the latest commit, and push status. The log path appears at the start and end.
+Use `passes run ./stages --verbose` to also stream all stage output to the terminal.
+Logs include the execution plan, labeled stage stdout/stderr, Git push output,
+and runner diagnostics. They are written as output arrives; partial lines are
+flushed when stages finish or are cancelled. On failure or interruption, the
+default terminal view shows up to 20 recent output lines (at most 8,000 characters).
+
+Logs live in `~/.local/state/passes/runs/`, or `$XDG_STATE_HOME/passes/runs/` when
+that absolute path is configured. Each file has a timestamp and unique ID and is
+created with owner-only permissions. Log destinations inside the target checkout,
+including through symlinks, are rejected so stages cannot accidentally commit
+logs. Logs are retained until you delete them. If a log cannot be created, stages
+do not start; a write failure cancels the run. `validate`, `--help`, and `--version`
+do not create logs.
+
 For the short `passes` command, run `bun link` in this package and ensure Bun's
 bin directory is on `PATH`. Alternatively, `bun run build` creates a bundled Bun
 entry point at `dist/passes.js`; run it with `bun /path/to/dist/passes.js ...`.
@@ -172,10 +188,10 @@ This lets stages request permission for Git writes such as `git add` and
 `git commit`, since `.git` is read-only inside the
 default workspace sandbox. Approval is still subject to policy; a denied request
 can leave changes uncommitted.
-`--ephemeral` avoids Codex session rollout persistence; the runner creates no
-logs, artifacts, or output directories. Codex may still perform its normal local
-configuration/cache operations. Stdout and stderr are streamed separately with
-stage labels; partial lines are flushed on completion/cancellation.
+`--ephemeral` avoids Codex session rollout persistence; the runner's separate log
+still captures stage output. Codex may perform its normal local configuration/cache
+operations. Stdout and stderr retain separate stage labels in the log and, with
+`--verbose`, stream to their corresponding terminal channels.
 
 Every stage prompt ends with these instructions:
 
@@ -205,7 +221,7 @@ Processes deliberately detaching into new sessions cannot be fully controlled by
 this mechanism; stage commands should not daemonize. Windows execution is
 explicitly unsupported rather than using incomplete tree cancellation.
 
-Exit codes: `0` success, `1` validation/setup/stage/push failure, `130` SIGINT,
+Exit codes: `0` success, `1` validation/setup/stage/push/logging failure, `130` SIGINT,
 `143` SIGTERM. A stage failure includes its actual exit code or signal.
 
 ## Shared-checkout safety

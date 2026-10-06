@@ -139,7 +139,7 @@ describe("stage configuration through the CLI", () => {
         '\uFEFF---\r\nname: "  Héllo, World!  " # comment\r\nstep: 2\r\nmodel: "  mock-model  "\r\nreasoning_effort: >-\r\n  medium\r\n---\r\n' +
           body,
       );
-      const result = await launch(ws).result;
+      const result = await launch(ws, ["run", "stages", "--verbose"]).result;
       expect(result.code).toBe(0);
       expect(result.stdout).toContain("Héllo, World!");
       expect(result.stdout).toContain("Step 2");

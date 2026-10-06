@@ -2,22 +2,20 @@ import { Effect } from "effect";
 import { execArgs, preflight, stagePrompt } from "./codex.ts";
 import { PassesError } from "./errors.ts";
 import { collectProcess, lineReporter, startProcess, waitForExit } from "./process.ts";
+import type { Reporter } from "./reporter.ts";
 import type { Plan, Stage } from "./stages.ts";
 
 const MAX_CONCURRENT_STAGES = 4;
-
-export interface Reporter {
-  readonly out: (line: string) => void;
-  readonly err: (line: string) => void;
-}
 
 const runStage = Effect.fn("Runner.runStage")(
   (stage: Stage, cwd: string, reporter: Reporter, scopeOverride?: string) =>
     Effect.scoped(
       Effect.gen(function* () {
         yield* Effect.sync(() => reporter.out(`${stage.name}: starting`));
-        const stdout = lineReporter((line) => reporter.out(`[${stage.name}] ${line}`));
-        const stderr = lineReporter((line) => reporter.err(`[${stage.name} stderr] ${line}`));
+        const stdout = lineReporter((line) => reporter.detail(`[${stage.name}] ${line}`));
+        const stderr = lineReporter((line) =>
+          reporter.detail(`[${stage.name} stderr] ${line}`, "stderr"),
+        );
         // Register first so process termination/draining runs before the final line flush.
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {
@@ -67,8 +65,8 @@ const pushCommits = Effect.fn("Runner.pushCommits")((cwd: string, reporter: Repo
         return;
       }
       yield* Effect.sync(() => reporter.out("All stages completed; pushing commits..."));
-      const stdout = lineReporter((line) => reporter.out(`[git push] ${line}`));
-      const stderr = lineReporter((line) => reporter.err(`[git push] ${line}`));
+      const stdout = lineReporter((line) => reporter.detail(`[git push] ${line}`));
+      const stderr = lineReporter((line) => reporter.detail(`[git push stderr] ${line}`, "stderr"));
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           stdout.end();
@@ -125,6 +123,12 @@ export const runPlan = Effect.fn("Runner.runPlan")(
           },
         );
       }
+      const head = yield* collectProcess("git", ["log", "-1", "--format=%h %s"], plan.cwd);
+      yield* Effect.sync(() =>
+        reporter.out(
+          head.code === 0 ? `Latest commit: ${head.stdout.trim()}` : "No commit available.",
+        ),
+      );
       yield* pushCommits(plan.cwd, reporter);
       yield* Effect.sync(() => reporter.out(`Finished: ${plan.stages.length} stages completed`));
     }),

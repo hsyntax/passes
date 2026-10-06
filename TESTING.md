@@ -21,7 +21,7 @@ bun dist/passes.js validate stages
 
 ## Automated checks
 
-- 110 CLI behavior tests passing, zero failures
+- 122 CLI behavior tests passing, zero failures
 - Strict TypeScript typecheck passing
 - Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
@@ -53,6 +53,14 @@ the final stage, new branches receive an upstream, configured destinations are
 honored, and no remote means no push. Failed or interrupted stages and validation
 leave remote refs unchanged. A rejecting remote fails the run while preserving
 local commits. These tests never push to an external repository.
+
+Logging cases verify default concise output, complete labeled logs, live file
+writes, cancellation with partial-line flushing, bounded failure excerpts, and
+`--verbose` streaming to separate terminal channels. They also check unique log
+files with owner-only permissions, XDG state-directory selection, rejection of
+checkout destinations (including symlinks), setup failures before Codex starts,
+preflight diagnostics, and no logs for validation/help/version. Test logs stay in
+the temporary workspace outside its Git checkout.
 
 Execution cases cover preflight rejection before any stage starts, paginated and
 malformed catalogs, missing/repeated cursors, unsupported models and efforts,

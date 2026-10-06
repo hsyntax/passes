@@ -386,7 +386,7 @@ describe("passes CLI acceptance", () => {
       });
       stage(ws, "stage.md", { name: "Output stage", model, effort: "high", prompt });
       writeFileSync(join(ws.cwd, "dirty.txt"), "pre-existing work\n");
-      const result = await launch(ws).result;
+      const result = await launch(ws, ["run", "stages", "--verbose"]).result;
       expect(result.code).toBe(0);
       const start = events(ws).find((event) => event.kind === "start");
       expect(start?.cwd).toBe(ws.cwd);
@@ -465,7 +465,7 @@ describe("passes CLI acceptance", () => {
         name: "Long stage",
         prompt: directive("long", { stdout: longLine, hold: true }),
       });
-      const execution = launch(ws);
+      const execution = launch(ws, ["run", "stages", "--verbose"]);
       await waitFor(
         () =>
           execution.stdout.includes("[Long stage] x") &&
@@ -555,6 +555,8 @@ describe("passes CLI acceptance", () => {
     { args: ["run", "stages", "--unexpected"] },
     { args: ["run", "stages", "extra"] },
     { args: ["validate"] },
+    { args: ["validate", "stages", "--verbose"] },
+    { args: ["run", "stages", "--verbose", "--verbose"] },
   ])(
     "rejects unsupported CLI arguments: %j",
     async ({ args }) => {
