@@ -106,8 +106,8 @@ export function parseStage(source: string, file: string): Stage {
   return { ...stageFrontmatter, slug, prompt, file };
 }
 
-function discoverStageFiles(stagesDirectory: string): Effect.Effect<string[], unknown, never> {
-  return Effect.gen(function* () {
+const discoverStageFiles = Effect.fn((stagesDirectory: string) =>
+  Effect.gen(function* () {
     const directory = yield* Effect.tryPromise({
       try: () => stat(stagesDirectory),
       catch: (error) => error,
@@ -115,7 +115,7 @@ function discoverStageFiles(stagesDirectory: string): Effect.Effect<string[], un
     if (!directory.isDirectory())
       return yield* Effect.fail(new PassesError(`${stagesDirectory}: expected a stages directory`));
     const stageFiles: string[] = [];
-    const walk = (dir: string): Effect.Effect<void, unknown, never> =>
+    const walk: (dir: string) => Effect.Effect<void, unknown, never> = Effect.fn((dir: string) =>
       Effect.gen(function* () {
         const entries = yield* Effect.tryPromise({
           try: () => readdir(dir, { withFileTypes: true }),
@@ -128,11 +128,12 @@ function discoverStageFiles(stagesDirectory: string): Effect.Effect<string[], un
           if (entry.isDirectory()) yield* walk(path);
           else if (entry.isFile() && /\.md$/i.test(entry.name)) stageFiles.push(path);
         }
-      });
+      }),
+    );
     yield* walk(stagesDirectory);
     return stageFiles;
-  });
-}
+  }),
+);
 
 export const loadPlan = Effect.fn("Stages.loadPlan")((stageDirectory: string, cwd: string) =>
   Effect.gen(function* () {
