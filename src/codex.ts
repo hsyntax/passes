@@ -8,6 +8,8 @@ const ModelCatalogEntry = Schema.Struct({
   supportedReasoningEfforts: Schema.Array(
     Schema.Struct({ reasoningEffort: Schema.NonEmptyString }),
   ),
+  serviceTiers: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.NonEmptyString }))),
+  additionalSpeedTiers: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
 });
 const ModelCatalogPage = Schema.Struct({
   data: Schema.Array(ModelCatalogEntry),
@@ -21,7 +23,7 @@ export function stagePrompt(stage: Stage, scopeOverride?: string): string {
   return `${prefix}${stage.prompt}\n\nAfter completing the stage, inspect your changes and commit them. Use a short subject describing the outcome. In the body, explain why and show a compact Before → After sketch when useful. Record only checks actually run. Skip empty commits.\n`;
 }
 
-export function execArgs(stage: Stage, cwd: string): string[] {
+export function execArgs(stage: Stage, cwd: string, fast = false): string[] {
   return [
     "exec",
     "--approve-for-me",
@@ -29,6 +31,7 @@ export function execArgs(stage: Stage, cwd: string): string[] {
     stage.model,
     "-c",
     `model_reasoning_effort=${JSON.stringify(stage.reasoning_effort)}`,
+    ...(fast ? ["--enable", "fast_mode", "-c", 'service_tier="fast"'] : []),
     "--cd",
     cwd,
     "--color",
@@ -38,10 +41,14 @@ export function execArgs(stage: Stage, cwd: string): string[] {
   ];
 }
 
-export const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")((cwd: string) =>
+export const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")((cwd: string, fast = false) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const proc = yield* startProcess("codex", ["app-server", "--listen", "stdio://"], cwd);
+      const proc = yield* startProcess(
+        "codex",
+        ["app-server", "--listen", "stdio://", ...(fast ? ["--enable", "fast_mode"] : [])],
+        cwd,
+      );
       return yield* Effect.callback<readonly CatalogModel[], PassesError>((resume) => {
         let pending = "";
         let stderr = "";
@@ -158,7 +165,7 @@ export const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")((cwd: string
   ),
 );
 
-export const preflight = Effect.fn("Codex.preflight")((plan: Plan) =>
+export const preflight = Effect.fn("Codex.preflight")((plan: Plan, fast = false) =>
   Effect.gen(function* () {
     if (process.platform === "win32")
       return yield* Effect.fail(
@@ -188,7 +195,7 @@ export const preflight = Effect.fn("Codex.preflight")((plan: Plan) =>
           `Codex ${match[0]} is too old. Install Codex CLI 0.159.2 or newer for the verified model-catalog protocol and execution flags.`,
         ),
       );
-    const catalog = yield* loadModelCatalog(plan.cwd);
+    const catalog = yield* loadModelCatalog(plan.cwd, fast);
     const errors: string[] = [];
     for (const stage of plan.stages) {
       const model = catalog.find((item) => item.model === stage.model);
@@ -211,5 +218,6 @@ export const preflight = Effect.fn("Codex.preflight")((plan: Plan) =>
           `Model compatibility check failed:\n${errors.map((error) => `  ${error}`).join("\n")}`,
         ),
       );
+    return catalog;
   }),
 );

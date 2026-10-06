@@ -2,7 +2,7 @@
 name: Isolate non-Effect boundaries
 step: 2
 model: gpt-6-luna
-reasoning_effort: high
+reasoning_effort: xhigh
 ---
 
 Keep core execution in Effect; isolate non-Effect SDK and API boundaries.

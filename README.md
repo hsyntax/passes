@@ -30,6 +30,13 @@ runner's source directory. Agents retain that invocation directory even if it is
 a subdirectory of the checkout. `run` requires an existing Git working tree;
 `validate` also works outside Git and never invokes Git or Codex.
 
+Use `passes run ./stages --scope pr --fast` to request fast mode for every model
+that advertises support in Codex's catalog. Reasoning effort stays unchanged.
+The runner prints each model's selection and uses Codex's configured defaults
+when fast support is not advertised. Without `--fast`, service-tier configuration
+is left to Codex. Fast mode uses more quota; availability depends on the model and
+account. See [Codex speed settings](https://learn.chatgpt.com/docs/agent-configuration/speed).
+
 `run` saves a separate log for each execution and prints concise stage progress,
 the latest commit, and push status. The log path appears at the start and end.
 Use `passes run ./stages --verbose` to also stream all stage output to the terminal.
@@ -76,15 +83,14 @@ The included `stages` directory runs seven sequential passes:
 2. Step 1: Adopt Effect ecosystem packages (`gpt-6.1-sol`, `high`), replacing custom implementation with suitable packages and services across the ecosystem
 3. Step 2: Isolate non-Effect boundaries (`gpt-6-luna`, `high`)
 4. Step 3: Apply Effect modules (`gpt-6-luna`, `xhigh`), including composition and behavior preservation
-5. Step 4: Improve data-access performance (`gpt-6-luna`, `high`)
+5. Step 4: Reduce redundant I/O (`gpt-6.1-sol`, `xhigh`), removing unnecessary external operations and verifying improvements with counts or measurements
 6. Step 5: Align domain names (`gpt-6-luna`, `high`), using established vocabulary within each bounded context
 7. Step 6: Choose Effect function constructors (`gpt-6-luna`, `high`), preserving intentional observability
 
 Package adoption runs before boundary adapters and local composition rewrites. It
 starts with the full vendored `repos/effect` package tree and looks beyond platform
 services for integrations that simplify the complete implementation and reduce
-maintained code. The runner has no per-stage fast-mode
-setting; stages configure only the model and reasoning effort for execution.
+maintained code. Fast mode is a runner-wide `--fast` flag, not a stage field.
 
 ## Stage format
 
@@ -185,6 +191,13 @@ codex exec --approve-for-me --model MODEL
   --cd INVOCATION_DIRECTORY
   --color never --ephemeral -
 ```
+
+With `--fast`, the catalog probe enables `fast_mode`. Models advertising a
+`priority` or `fast` service tier receive `--enable fast_mode -c 'service_tier="fast"'`
+during execution. The runner also recognizes the older `additionalSpeedTiers`
+field when `serviceTiers` is empty or absent. Unsupported or unadvertised models
+receive no service-tier override. A runtime failure is reported normally without
+retrying the stage, since it may already have edited files or committed changes.
 
 The model and effort come from the stage. The effort is encoded as a quoted TOML
 string. Prompts go over stdin, avoiding shell interpretation and command-line

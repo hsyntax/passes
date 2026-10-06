@@ -10,7 +10,7 @@ const HELP = `passes 0.1.0
 
 Usage:
   passes validate <stages-directory> [--scope <text>]
-  passes run <stages-directory> [--scope <text>] [--verbose]
+  passes run <stages-directory> [--scope <text>] [--verbose] [--fast]
   passes --help
   passes --version
 
@@ -18,6 +18,7 @@ Markdown stages in the directory are discovered recursively (.md, no symlinks).
 validate checks YAML and prints the layer graph without invoking Codex.
 run validates, checks Codex's model catalog, executes each layer, then pushes if a remote exists.
 --scope overrides stage scope and prepends a literal Scope: line to each prompt.
+--fast requests fast mode for models that advertise support, preserving reasoning effort.
 run saves output outside the checkout and prints progress; --verbose also streams stage output.
 All agents use your invocation directory in its existing Git checkout.
 Concurrent stages share files. The runner does not create commits, worktrees, or branches.
@@ -40,8 +41,14 @@ function main(args: readonly string[]) {
     const positional: string[] = [];
     let scope: string | undefined;
     let verbose = false;
+    let fast = false;
     for (let index = 0; index < args.length; index += 1) {
       const argument = args[index];
+      if (argument === "--fast") {
+        if (fast) return yield* Effect.fail(new PassesError("--fast may be supplied only once"));
+        fast = true;
+        continue;
+      }
       if (argument === "--verbose") {
         if (verbose)
           return yield* Effect.fail(new PassesError("--verbose may be supplied only once"));
@@ -75,6 +82,8 @@ function main(args: readonly string[]) {
     }
     if (verbose && command !== "run")
       return yield* Effect.fail(new PassesError("--verbose is only supported by run"));
+    if (fast && command !== "run")
+      return yield* Effect.fail(new PassesError("--fast is only supported by run"));
     const plan = yield* loadPlan(stagesDirectory, process.cwd());
     if (command === "validate") {
       yield* Effect.sync(() => reporter.out(renderPlanGraph(plan)));
@@ -101,7 +110,7 @@ function main(args: readonly string[]) {
       reporter.out(`Log: ${log.path}`);
       log.context(`Started: ${new Date().toISOString()}\n${renderPlanGraph(plan)}`);
     });
-    yield* runPlan(plan, log.reporter, scope);
+    yield* runPlan(plan, log.reporter, scope, fast);
   });
 }
 

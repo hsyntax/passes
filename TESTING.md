@@ -21,7 +21,7 @@ bun dist/passes.js validate stages
 
 ## Automated checks
 
-- 122 CLI behavior tests passing, zero failures
+- 129 CLI behavior tests passing, zero failures
 - Strict TypeScript typecheck passing
 - Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
@@ -114,11 +114,14 @@ an installed user-provided Effect rewrite skill. It deliberately omits broader b
 and formatting advice, while retaining essential composition and observable-behavior
 constraints. It does not include the earlier rewrite examples.
 
-The frozen dependency remains `effect@4.0.0`. Data-access concepts were checked
-against that version's source and the PostgreSQL parameter/IN/ANY documentation.
-Its concise batching sketches are illustrative, not database benchmarks or verified
-resolver rewrites. Each Effect stage directs agents to the target repository's
-vendored `repos/effect` and actual database/driver documentation when relevant.
+The frozen dependency remains `effect@4.0.0`. The redundant-I/O stage directs
+agents to establish a baseline, remove unnecessary external operations, and verify
+improvements while preserving behavior and intentional concurrency. It covers
+database queries, API requests, file reads, and subprocess calls, and permits
+batching only for independent operations backed by genuine bulk APIs. This prompt
+change was validated without a live optimization run or benchmark. The stage
+directs agents to the target repository's vendored `repos/effect` and actual API
+contracts when relevant.
 The naming stage applies established domain vocabulary within bounded contexts and
 preserves external naming contracts; no application code was renamed in this PR.
 
@@ -129,6 +132,14 @@ disable body tracing; `gen` produces an Effect. This is source verification, not
 live telemetry or performance test. It does not upgrade this branch's dependency.
 
 ## Codex checks
+
+Fast-mode support was checked against the installed CLI's generated model-list
+schema and cached catalog: `serviceTiers` advertises tier IDs, with
+`additionalSpeedTiers` retained for older metadata. Fixture tests exercise mixed
+model support across layers, unchanged reasoning/scope, omitted flags, pagination,
+malformed metadata, invalid flag usage, and no retries after a failed fast stage.
+Fast-mode selection appears in terminal output and run logs. No live model call
+was made to test fast mode or account entitlement.
 
 Installed Codex CLI 0.159.2 help and generated protocol schema were inspected.
 A catalog-only app-server probe used a fresh temporary Codex home and sent only

@@ -110,6 +110,9 @@ if (args[0] === "--version") {
           ).map((reasoningEffort) => ({ reasoningEffort, description: "" })),
           inputModalities: ["text"],
           supportsPersonality: false,
+          ...(JSON.parse(process.env.PASSES_TEST_MODEL_TIERS ?? "{}") as Record<string, object>)[
+            model
+          ],
         })),
         nextCursor:
           catalogMode === "no-cursor"

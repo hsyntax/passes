@@ -8,7 +8,7 @@ import type { Plan, Stage } from "./stages.ts";
 const MAX_CONCURRENT_STAGES = 4;
 
 const runStage = Effect.fn("Runner.runStage")(
-  (stage: Stage, cwd: string, reporter: Reporter, scopeOverride?: string) =>
+  (stage: Stage, cwd: string, reporter: Reporter, scopeOverride?: string, fast = false) =>
     Effect.scoped(
       Effect.gen(function* () {
         yield* Effect.sync(() => reporter.out(`${stage.name}: starting`));
@@ -23,7 +23,7 @@ const runStage = Effect.fn("Runner.runStage")(
             stderr.end();
           }),
         );
-        const proc = yield* startProcess("codex", execArgs(stage, cwd), cwd);
+        const proc = yield* startProcess("codex", execArgs(stage, cwd, fast), cwd);
         proc.child.stdout.on("data", stdout.data);
         proc.child.stderr.on("data", stderr.data);
         proc.child.stdin.end(stagePrompt(stage, scopeOverride));
@@ -101,9 +101,30 @@ const pushCommits = Effect.fn("Runner.pushCommits")((cwd: string, reporter: Repo
 );
 
 export const runPlan = Effect.fn("Runner.runPlan")(
-  (plan: Plan, reporter: Reporter, scopeOverride?: string) =>
+  (plan: Plan, reporter: Reporter, scopeOverride?: string, fast = false) =>
     Effect.gen(function* () {
-      yield* preflight(plan);
+      const catalog = yield* preflight(plan, fast);
+      const fastModels = new Set(
+        catalog
+          .filter(
+            (model) =>
+              fast &&
+              (model.serviceTiers?.some((tier) => tier.id === "priority" || tier.id === "fast") ||
+                (!model.serviceTiers?.length && model.additionalSpeedTiers?.includes("fast"))),
+          )
+          .map((model) => model.model),
+      );
+      if (fast) {
+        for (const model of new Set(plan.stages.map((stage) => stage.model))) {
+          yield* Effect.sync(() =>
+            reporter.out(
+              fastModels.has(model)
+                ? `${model}: fast mode requested.`
+                : `${model}: fast mode not advertised; using Codex defaults.`,
+            ),
+          );
+        }
+      }
       yield* Effect.sync(() =>
         reporter.out(
           "Model/effort catalog check passed; live access and quota are checked by Codex during execution.",
@@ -118,7 +139,8 @@ export const runPlan = Effect.fn("Runner.runPlan")(
         // Effect interrupts sibling fibers and waits for their scoped process cleanup on failure.
         yield* Effect.forEach(
           layer.stages,
-          (stage) => runStage(stage, plan.cwd, reporter, scopeOverride),
+          (stage) =>
+            runStage(stage, plan.cwd, reporter, scopeOverride, fastModels.has(stage.model)),
           {
             concurrency: MAX_CONCURRENT_STAGES,
             discard: true,
