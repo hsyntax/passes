@@ -14,7 +14,7 @@ export const nodeProcessLayer = childProcessLayer.pipe(
   Layer.provideMerge(Layer.mergeAll(fileSystemLayer, pathLayer, stdioLayer)),
 );
 
-export const startProcess = Effect.fn("Process.start")(
+export const startProcess = Effect.fn(
   (
     command: string,
     args: readonly string[],

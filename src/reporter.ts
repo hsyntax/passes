@@ -18,7 +18,7 @@ export interface RunReporter {
   readonly finish: (unsuccessful: boolean) => Effect.Effect<void, PassesError, Stdio.Stdio>;
 }
 
-const writeTerminal = (line: string, stream: "stdout" | "stderr") =>
+const writeTerminal = Effect.fn((line: string, stream: "stdout" | "stderr") =>
   Effect.gen(function* () {
     const stdio = yield* Stdio.Stdio;
     yield* Stream.run(
@@ -29,7 +29,8 @@ const writeTerminal = (line: string, stream: "stdout" | "stderr") =>
         (error) => new PassesError(`Could not write to ${stream}: ${message(error)}`),
       ),
     );
-  });
+  }),
+);
 
 export const terminal: Reporter = {
   out: (line) => writeTerminal(line, "stdout"),
@@ -89,7 +90,7 @@ export const createRunReporter = Effect.fn("Reporter.createRunReporter")(
         failed = true;
         onFailure(new PassesError(`Could not write run log ${logPath}: ${message(error)}`));
       };
-      const record = (line: string, includeTail = false) =>
+      const record = Effect.fn((line: string, includeTail = false) =>
         lock.withPermit(
           Effect.gen(function* () {
             if (!failed)
@@ -99,11 +100,12 @@ export const createRunReporter = Effect.fn("Reporter.createRunReporter")(
             if (includeTail)
               tail = `${tail}${line}\n`.slice(-8_000).split("\n").slice(-21).join("\n");
           }),
-        );
-      const report = (
-        line: string,
-        write: (line: string) => Effect.Effect<void, PassesError, Stdio.Stdio>,
-      ) => record(line).pipe(Effect.andThen(write(line)));
+        ),
+      );
+      const report = Effect.fn(
+        (line: string, write: (line: string) => Effect.Effect<void, PassesError, Stdio.Stdio>) =>
+          record(line).pipe(Effect.andThen(write(line))),
+      );
       const reporter: Reporter = {
         out: (line) => report(line, terminal.out),
         err: (line) => report(line, terminal.err),

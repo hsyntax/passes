@@ -73,11 +73,12 @@ export const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
         let catalog: readonly CatalogModel[] | undefined;
         const catalogModels: CatalogModel[] = [];
         const cursors = new Set<string>();
-        const sendRpcRequest = (request: object) =>
+        const sendRpcRequest = Effect.fn((request: object) =>
           Queue.offer(input, new TextEncoder().encode(`${JSON.stringify(request)}\n`)).pipe(
             Effect.asVoid,
-          );
-        const requestModelCatalogPage = (cursor?: string) =>
+          ),
+        );
+        const requestModelCatalogPage = Effect.fn((cursor?: string) =>
           Effect.gen(function* () {
             requestId += 1;
             yield* sendRpcRequest({
@@ -85,8 +86,9 @@ export const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
               method: "model/list",
               params: { limit: 100, includeHidden: true, ...(cursor ? { cursor } : {}) },
             });
-          });
-        const processModelCatalogLine = (line: string) =>
+          }),
+        );
+        const processModelCatalogLine = Effect.fn((line: string) =>
           Effect.gen(function* () {
             if (!line.trim()) return true;
             const action = yield* Effect.try({
@@ -136,8 +138,9 @@ export const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
                 catalog = action.catalog;
                 return false;
             }
-          });
-        const processModelCatalogChunk = (chunk: string) =>
+          }),
+        );
+        const processModelCatalogChunk = Effect.fn((chunk: string) =>
           Effect.gen(function* () {
             pending += chunk;
             let newline = pending.indexOf("\n");
@@ -152,7 +155,8 @@ export const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
                 new PassesError("Codex model catalog: response exceeded 1 MiB without a newline"),
               );
             return true;
-          });
+          }),
+        );
         const stdoutFiber = yield* Effect.forkScoped(
           Stream.decodeText(proc.stdout).pipe(Stream.runForEachWhile(processModelCatalogChunk)),
         );
