@@ -26,8 +26,8 @@ Concurrent stages share files. The runner does not create commits, worktrees, or
 Requires Bun >=1.3 and Codex CLI >=0.159.2; macOS/Linux for execution.
 `;
 let reporter: Reporter = terminal;
-let runLog: RunReporter | undefined;
-let loggingFailure: PassesError | undefined;
+let activeRunReporter: RunReporter | undefined;
+let runLogWriteFailure: PassesError | undefined;
 
 function main() {
   return Effect.scoped(
@@ -41,15 +41,16 @@ function main() {
         yield* reporter.out("passes 0.1.0");
         return;
       }
-      const positional: string[] = [];
-      let scope: string | undefined;
+      const positionalArguments: string[] = [];
+      let scopeOverride: string | undefined;
       let verbose = false;
-      let fast = false;
+      let fastMode = false;
       for (let index = 0; index < args.length; index += 1) {
         const argument = args[index]!;
         if (argument === "--fast") {
-          if (fast) return yield* Effect.fail(new PassesError("--fast may be supplied only once"));
-          fast = true;
+          if (fastMode)
+            return yield* Effect.fail(new PassesError("--fast may be supplied only once"));
+          fastMode = true;
           continue;
         }
         if (argument === "--verbose") {
@@ -59,21 +60,21 @@ function main() {
           continue;
         }
         if (argument !== "--scope") {
-          positional.push(argument);
+          positionalArguments.push(argument);
           continue;
         }
-        if (scope !== undefined)
+        if (scopeOverride !== undefined)
           return yield* Effect.fail(new PassesError("--scope may be supplied only once"));
-        scope = yield* Effect.try({
+        scopeOverride = yield* Effect.try({
           try: () => parseScope(args[index + 1]),
           catch: (error) => new PassesError(`--scope: ${message(error)}`),
         });
         index += 1;
       }
-      const [command, stagesDirectory] = positional;
+      const [cliCommand, stagesDirectory] = positionalArguments;
       if (
-        positional.length !== 2 ||
-        (command !== "run" && command !== "validate") ||
+        positionalArguments.length !== 2 ||
+        (cliCommand !== "run" && cliCommand !== "validate") ||
         !stagesDirectory ||
         stagesDirectory.startsWith("--")
       ) {
@@ -83,53 +84,57 @@ function main() {
           ),
         );
       }
-      if (verbose && command !== "run")
+      if (verbose && cliCommand !== "run")
         return yield* Effect.fail(new PassesError("--verbose is only supported by run"));
-      if (fast && command !== "run")
+      if (fastMode && cliCommand !== "run")
         return yield* Effect.fail(new PassesError("--fast is only supported by run"));
       const invocationDirectory = yield* Effect.sync(() => process.cwd());
       const plan = yield* loadPlan(stagesDirectory, invocationDirectory);
-      if (command === "validate") {
+      if (cliCommand === "validate") {
         yield* reporter.out(renderPlanGraph(plan));
         return;
       }
       // This also rejects bare repositories and Git metadata directories, before Codex starts.
-      const repository = yield* runCommand(
+      const repositoryRoot = yield* runCommand(
         "git",
         ["rev-parse", "--show-toplevel"],
         plan.invocationDirectory,
       );
-      if (repository.code !== 0)
+      if (repositoryRoot.code !== 0)
         return yield* Effect.fail(
           new PassesError("Run passes from inside an existing Git checkout."),
         );
-      const log = yield* createRunReporter(repository.stdout.trim(), verbose, (error) => {
-        loggingFailure = error;
-        queueMicrotask(() => interrupt());
-      }).pipe(
+      const runReporter = yield* createRunReporter(
+        repositoryRoot.stdout.trim(),
+        verbose,
+        (error) => {
+          runLogWriteFailure = error;
+          queueMicrotask(() => interrupt());
+        },
+      ).pipe(
         Effect.mapError((error) => new PassesError(`Could not create run log: ${message(error)}`)),
       );
-      runLog = log;
-      reporter = log.reporter;
-      yield* reporter.out(`Log: ${log.path}`);
-      const startedAt = yield* Clock.currentTimeMillis.pipe(
+      activeRunReporter = runReporter;
+      reporter = runReporter.reporter;
+      yield* reporter.out(`Log: ${runReporter.path}`);
+      const runStartedAt = yield* Clock.currentTimeMillis.pipe(
         Effect.map(DateTime.makeUnsafe),
         Effect.map(DateTime.formatIso),
       );
-      yield* log.context(`Started: ${startedAt}\n${renderPlanGraph(plan)}`);
-      yield* runPlan(plan, log.reporter, scope, fast);
+      yield* runReporter.context(`Started: ${runStartedAt}\n${renderPlanGraph(plan)}`);
+      yield* runPlan(plan, runReporter.reporter, scopeOverride, fastMode);
     }).pipe(
       Effect.onExit((exit) =>
         Effect.gen(function* () {
-          if (loggingFailure) {
+          if (runLogWriteFailure) {
             process.exitCode = 1;
-            yield* terminal.err(`passes: ${loggingFailure.message}`);
+            yield* terminal.err(`passes: ${runLogWriteFailure.message}`);
           } else if (interrupted) process.exitCode = interrupted === "SIGINT" ? 130 : 143;
           else if (Exit.isFailure(exit)) {
             process.exitCode = 1;
             yield* reporter.err(`passes: ${message(Cause.squash(exit.cause))}`);
           }
-          if (runLog) yield* runLog.finish(Boolean(process.exitCode));
+          if (activeRunReporter) yield* activeRunReporter.finish(Boolean(process.exitCode));
         }),
       ),
     ),
@@ -137,29 +142,29 @@ function main() {
 }
 
 let interrupted: NodeJS.Signals | undefined;
-const stop = (signal: NodeJS.Signals) => {
+const cancelRun = (signal: NodeJS.Signals) => {
   if (interrupted) return;
   interrupted = signal;
   interruptNotice(`${signal}: cancelling active stages...`);
   interrupt();
 };
-const sigint = () => stop("SIGINT");
-const sigterm = () => stop("SIGTERM");
+const sigint = () => cancelRun("SIGINT");
+const sigterm = () => cancelRun("SIGTERM");
 process.on("SIGINT", sigint);
 process.on("SIGTERM", sigterm);
 // A closed stdout pipe should also cancel descendants, rather than orphaning them.
-const outputError = (error: NodeJS.ErrnoException) => {
-  if (error.code === "EPIPE") stop("SIGTERM");
+const handleOutputError = (error: NodeJS.ErrnoException) => {
+  if (error.code === "EPIPE") cancelRun("SIGTERM");
   else throw error;
 };
-process.stdout.on("error", outputError);
-process.stderr.on("error", outputError);
+process.stdout.on("error", handleOutputError);
+process.stderr.on("error", handleOutputError);
 const interrupt = Effect.runCallback(main().pipe(Effect.provide(nodeProcessLayer)), {
   onExit: (exit) => {
     process.removeListener("SIGINT", sigint);
     process.removeListener("SIGTERM", sigterm);
-    process.stdout.removeListener("error", outputError);
-    process.stderr.removeListener("error", outputError);
+    process.stdout.removeListener("error", handleOutputError);
+    process.stderr.removeListener("error", handleOutputError);
     if (Exit.isFailure(exit) && process.exitCode === undefined) process.exitCode = 1;
   },
 });
