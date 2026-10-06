@@ -45,16 +45,18 @@ literal Markdown preservation, and standard commit instructions appended exactly
 once to every stage invocation. Tests do
 not rely on a real model to interpret those instructions or create a commit.
 
-## Example verification
+## Stage guidance verification
 
-The stage examples are adapted guidance, not claimed upstream before/after pairs.
-The frozen dependency is `effect@4.0.0`; its installed source and matching public
-source tag were checked. The offline Mac's `repos/effect` checkout was not inspected.
+The module-use stage distills the relevant direct-API and abstraction guidance from
+an installed user-provided Effect rewrite skill. It deliberately omits broader bug-fix
+and formatting advice. The composition stage retains concise correctness constraints;
+neither stage includes the earlier rewrite examples.
 
-The Array and sequential Effect snippets passed strict TypeScript checks and focused
-runtime checks: 1,050 chunking comparisons, empty/invalid-size/domain boundaries,
-sequential ordering and failure, and interruption with scoped cleanup. The database batching example is
-illustrative pseudocode, not a database benchmark or a verified resolver rewrite.
+The frozen dependency remains `effect@4.0.0`. The data-access stage's API pointers
+were checked against that version's installed source and matching public source tag.
+Its batching sketch is illustrative pseudocode, not a database benchmark or a verified
+resolver rewrite. Each Effect stage directs agents to the target repository's vendored
+`repos/effect` source and pinned version when needed.
 
 ## Codex checks
 
