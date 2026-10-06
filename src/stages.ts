@@ -1,16 +1,33 @@
-import { readdir, readFile, stat } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
-import { Effect, Schema } from "effect";
+import { readdir } from "node:fs/promises";
+import { Effect, FileSystem, Path, Schema } from "effect";
 import { parseDocument } from "yaml";
 import { message, PassesError } from "./errors.ts";
 
-const Text = Schema.String.check(Schema.isMinLength(1), Schema.isPattern(/^[^\p{Cc}\p{Cf}]+$/u));
-const Metadata = Schema.Struct({
-  name: Text,
+const FrontmatterString = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isPattern(/^[^\p{Cc}\p{Cf}]+$/u),
+);
+const ScopeString = FrontmatterString.check(
+  Schema.isPattern(/\S/),
+  Schema.isPattern(/^[^\p{Zl}\p{Zp}]+$/u),
+);
+const StageFrontmatterSchema = Schema.Struct({
+  name: FrontmatterString,
   step: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
-  model: Text,
-  reasoning_effort: Text,
+  model: FrontmatterString,
+  reasoning_effort: FrontmatterString,
+  scope: Schema.optionalKey(ScopeString),
 });
+
+export function parseScope(scope: unknown): string {
+  try {
+    return Schema.decodeUnknownSync(ScopeString)(scope);
+  } catch {
+    throw new PassesError(
+      "scope must be a nonempty single-line string without control or format characters",
+    );
+  }
+}
 
 export interface Stage {
   readonly name: string;
@@ -18,6 +35,7 @@ export interface Stage {
   readonly step: number;
   readonly model: string;
   readonly reasoning_effort: string;
+  readonly scope?: string;
   readonly prompt: string;
   readonly file: string;
 }
@@ -26,14 +44,14 @@ export interface Layer {
   readonly stages: readonly Stage[];
 }
 export interface Plan {
-  readonly cwd: string;
-  readonly directory: string;
+  readonly invocationDirectory: string;
+  readonly stagesDirectory: string;
   readonly stages: readonly Stage[];
   readonly layers: readonly Layer[];
 }
 
-export const slugify = (name: string): string =>
-  name
+export const stageSlug = (stageName: string): string =>
+  stageName
     .normalize("NFKD")
     .replace(/\p{M}/gu, "")
     .toLowerCase()
@@ -52,109 +70,149 @@ export function parseStage(source: string, file: string): Stage {
       `${file}: YAML: ${[...yaml.errors, ...yaml.warnings].map((e) => e.message).join("; ")}`,
     );
   }
-  let raw: unknown;
+  let frontmatter: unknown;
   try {
-    raw = yaml.toJS({ maxAliasCount: 0 });
+    frontmatter = yaml.toJS({ maxAliasCount: 0 });
   } catch (error) {
     throw new PassesError(`${file}: YAML: ${message(error)} (aliases are not supported)`);
   }
-  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    raw = Object.fromEntries(
-      Object.entries(raw).map(([key, value]) => [
+  if (frontmatter && typeof frontmatter === "object" && !Array.isArray(frontmatter)) {
+    frontmatter = Object.fromEntries(
+      Object.entries(frontmatter).map(([key, value]) => [
         key,
-        typeof value === "string" ? value.trim() : value,
+        typeof value === "string" && key !== "scope" ? value.trim() : value,
       ]),
     );
   }
-  let metadata: typeof Metadata.Type;
+  let stageFrontmatter: typeof StageFrontmatterSchema.Type;
   try {
-    metadata = Schema.decodeUnknownSync(Metadata, { onExcessProperty: "error", errors: "all" })(
-      raw,
-    );
+    stageFrontmatter = Schema.decodeUnknownSync(StageFrontmatterSchema, {
+      onExcessProperty: "error",
+      errors: "all",
+    })(frontmatter);
   } catch (error) {
     throw new PassesError(`${file}: frontmatter: ${message(error)}`);
   }
-  if (!Number.isSafeInteger(metadata.step)) {
+  if (!Number.isSafeInteger(stageFrontmatter.step)) {
     throw new PassesError(`${file}: step must be a nonnegative safe integer`);
   }
   const prompt = match[2] ?? "";
   if (!prompt.trim()) throw new PassesError(`${file}: prompt body must not be empty`);
   if (prompt.includes("\0"))
     throw new PassesError(`${file}: prompt body must not contain NUL bytes`);
-  const slug = slugify(metadata.name);
+  const slug = stageSlug(stageFrontmatter.name);
   if (!slug) throw new PassesError(`${file}: name must contain at least one letter or number`);
-  return { ...metadata, slug, prompt, file };
+  return { ...stageFrontmatter, slug, prompt, file };
 }
 
-async function discover(directory: string): Promise<string[]> {
-  if (!(await stat(directory)).isDirectory())
-    throw new PassesError(`${directory}: expected a stages directory`);
-  const files: string[] = [];
-  async function walk(dir: string): Promise<void> {
-    const entries = await readdir(dir, { withFileTypes: true });
-    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    for (const entry of entries) {
-      const path = join(dir, entry.name);
-      // Never follow links, including links that could leave the supplied stage tree.
-      if (entry.isDirectory()) await walk(path);
-      else if (entry.isFile() && /\.md$/i.test(entry.name)) files.push(path);
-    }
-  }
-  await walk(directory);
-  return files;
-}
+const discoverStageFiles = Effect.fn((stagesDirectory: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs
+      .stat(stagesDirectory)
+      .pipe(Effect.mapError((error) => error.cause ?? error));
+    if (directory.type !== "Directory")
+      return yield* Effect.fail(new PassesError(`${stagesDirectory}: expected a stages directory`));
+    const stageFiles: string[] = [];
+    const walk: (dir: string) => Effect.Effect<void, unknown, never> = Effect.fn((dir: string) =>
+      Effect.gen(function* () {
+        // Dirent flags let this walk skip symlinks; FileSystem.readDirectory returns names only.
+        const entries = yield* Effect.tryPromise({
+          try: () => readdir(dir, { withFileTypes: true }),
+          catch: (error) => error,
+        });
+        entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        for (const entry of entries) {
+          const entryPath = path.join(dir, entry.name);
+          // Never follow links, including links that could leave the supplied stage tree.
+          if (entry.isDirectory()) yield* walk(entryPath);
+          else if (entry.isFile() && /\.md$/i.test(entry.name)) stageFiles.push(entryPath);
+        }
+      }),
+    );
+    yield* walk(stagesDirectory);
+    return stageFiles;
+  }),
+);
 
-export const loadPlan = (directory: string, cwd: string) =>
-  Effect.tryPromise({
-    try: async (): Promise<Plan> => {
-      const absolute = resolve(cwd, directory);
-      const paths = await discover(absolute);
-      if (!paths.length) throw new PassesError(`${directory}: no Markdown (.md) stages found`);
+export const loadPlan = Effect.fn("Stages.loadPlan")(
+  (stagesDirectory: string, invocationDirectory: string) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const absoluteStagesDirectory = path.resolve(invocationDirectory, stagesDirectory);
+      const stageFiles = yield* discoverStageFiles(absoluteStagesDirectory);
+      if (!stageFiles.length)
+        return yield* Effect.fail(
+          new PassesError(`${stagesDirectory}: no Markdown (.md) stages found`),
+        );
       const stages: Stage[] = [];
       const errors: string[] = [];
-      const names = new Map<string, string>();
-      const slugs = new Map<string, string>();
-      for (const path of paths) {
-        const file = relative(cwd, path) || path;
+      const stageNames = new Map<string, string>();
+      const stageSlugs = new Map<string, string>();
+      for (const stagePath of stageFiles) {
+        const file = path.relative(invocationDirectory, stagePath) || stagePath;
         try {
-          const stage = parseStage(await readFile(path, "utf8"), file);
-          const duplicate = names.get(stage.name);
-          const collision = slugs.get(stage.slug);
+          const source = yield* Effect.match(fs.readFile(stagePath), {
+            onFailure: (error) => {
+              errors.push(message(error.cause ?? error));
+              return undefined;
+            },
+            // Match Node's UTF-8 decoding, including preservation of a leading BOM.
+            onSuccess: (source) => Buffer.from(source).toString("utf8"),
+          });
+          if (source === undefined) continue;
+          const stage = parseStage(source, file);
+          const duplicate = stageNames.get(stage.name);
+          const collision = stageSlugs.get(stage.slug);
           if (duplicate)
             throw new PassesError(`${file}: name "${stage.name}" duplicates ${duplicate}`);
           if (collision)
             throw new PassesError(
               `${file}: name "${stage.name}" has slug "${stage.slug}", which collides with ${collision}`,
             );
-          names.set(stage.name, file);
-          slugs.set(stage.slug, file);
+          stageNames.set(stage.name, file);
+          stageSlugs.set(stage.slug, file);
           stages.push(stage);
         } catch (error) {
           errors.push(message(error));
         }
       }
-      if (errors.length)
-        throw new PassesError(
-          `Invalid stage configuration:\n${errors.map((e) => `  ${e}`).join("\n")}`,
+      if (errors.length) {
+        return yield* Effect.fail(
+          new PassesError(
+            `Invalid stage configuration:\n${errors.map((e) => `  ${e}`).join("\n")}`,
+          ),
         );
-      const steps = [...new Set(stages.map((s) => s.step))].sort((a, b) => a - b);
+      }
+      const layersByStep = new Map<number, Stage[]>();
+      for (const stage of stages) {
+        const layer = layersByStep.get(stage.step);
+        if (layer) layer.push(stage);
+        else layersByStep.set(stage.step, [stage]);
+      }
       return {
-        cwd,
-        directory: absolute,
+        invocationDirectory,
+        stagesDirectory: absoluteStagesDirectory,
         stages,
-        layers: steps.map((step) => ({ step, stages: stages.filter((s) => s.step === step) })),
+        layers: [...layersByStep]
+          .sort(([left], [right]) => left - right)
+          .map(([step, layerStages]) => ({ step, stages: layerStages })),
       };
-    },
-    catch: (error) =>
-      error instanceof PassesError
-        ? error
-        : new PassesError(`Could not read stages: ${message(error)}`),
-  });
+    }).pipe(
+      Effect.mapError((error) =>
+        error instanceof PassesError
+          ? error
+          : new PassesError(`Could not read stages: ${message(error)}`),
+      ),
+    ),
+);
 
-export function renderGraph(plan: Plan): string {
+export function renderPlanGraph(plan: Plan): string {
   const lines = [
     `Valid: ${plan.stages.length} stages, ${plan.layers.length} layers`,
-    `Working directory: ${plan.cwd}`,
+    `Working directory: ${plan.invocationDirectory}`,
     "",
   ];
   for (const [index, layer] of plan.layers.entries()) {

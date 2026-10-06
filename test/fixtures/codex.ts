@@ -8,15 +8,17 @@ if (!eventPath) throw new Error("PASSES_TEST_EVENTS is required by the test fixt
 interface Directive {
   id: string;
   barrier?: string[];
+  minimumStarts?: number;
+  releaseFile?: string;
   waitForDescendantOf?: string[];
-  delayMs?: number;
   exitCode?: number;
   hold?: boolean;
   ignoreTerm?: boolean;
   spawnDescendant?: boolean;
+  outputBytewise?: boolean;
   stdout?: string;
   stderr?: string;
-  appendFile?: { path: string; content: string };
+  appendFile?: { path: string; content: string; commit?: boolean };
 }
 
 interface Event {
@@ -103,12 +105,14 @@ if (args[0] === "--version") {
           hidden: false,
           isDefault: index === 0,
           defaultReasoningEffort: "medium",
-          supportedReasoningEfforts: [
-            { reasoningEffort: "medium", description: "" },
-            { reasoningEffort: "high", description: "" },
-          ],
+          supportedReasoningEfforts: (
+            JSON.parse(process.env.PASSES_TEST_EFFORTS ?? '["medium", "high"]') as string[]
+          ).map((reasoningEffort) => ({ reasoningEffort, description: "" })),
           inputModalities: ["text"],
           supportsPersonality: false,
+          ...(JSON.parse(process.env.PASSES_TEST_MODEL_TIERS ?? "{}") as Record<string, object>)[
+            model
+          ],
         })),
         nextCursor:
           catalogMode === "no-cursor"
@@ -142,6 +146,15 @@ if (args[0] === "--version") {
     const path = resolve(process.cwd(), directive.appendFile.path);
     const before = existsSync(path) ? readFileSync(path, "utf8") : "";
     writeFileSync(path, before + directive.appendFile.content);
+    if (directive.appendFile.commit) {
+      for (const args of [
+        ["add", "--", path],
+        ["commit", "-m", `Fixture stage ${directive.id}`],
+      ]) {
+        const result = Bun.spawnSync(["git", ...args]);
+        if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+      }
+    }
   }
   if (directive.spawnDescendant) {
     Bun.spawn([process.execPath, import.meta.path, "__descendant", directive.id], {
@@ -159,6 +172,10 @@ if (args[0] === "--version") {
     );
     log({ kind: "barrier", id: directive.id, pid: process.pid });
   }
+  const minimumStarts = directive.minimumStarts;
+  if (minimumStarts) {
+    await waitFor(() => events().filter((event) => event.kind === "start").length >= minimumStarts);
+  }
   if (directive.waitForDescendantOf) {
     await waitFor(
       () =>
@@ -167,12 +184,25 @@ if (args[0] === "--version") {
         ) ?? false,
     );
   }
-  if (directive.stdout) process.stdout.write(directive.stdout);
-  if (directive.stderr) process.stderr.write(directive.stderr);
+  async function output(stream: NodeJS.WriteStream, text: string | undefined) {
+    if (!text) return;
+    if (directive.outputBytewise) {
+      for (const byte of Buffer.from(text)) {
+        stream.write(Buffer.from([byte]));
+        // Exercise decoding across writes, without making the assertion depend
+        // on timing or on how the OS groups the pipe's bytes.
+        await Bun.sleep(2);
+      }
+    } else stream.write(text);
+  }
+  await output(process.stdout, directive.stdout);
+  await output(process.stderr, directive.stderr);
+  log({ kind: "ready", id: directive.id, pid: process.pid });
+  const releaseFile = directive.releaseFile;
+  if (releaseFile) await waitFor(() => existsSync(releaseFile));
   if (directive.hold) {
     setInterval(() => {}, 1_000);
   } else {
-    await Bun.sleep(directive.delayMs ?? 0);
     log({ kind: "finish", id: directive.id, pid: process.pid, exitCode: directive.exitCode ?? 0 });
     process.exit(directive.exitCode ?? 0);
   }

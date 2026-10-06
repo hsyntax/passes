@@ -28,6 +28,10 @@ const repositories: ReadonlyArray<Repository> = [
         packageDirectory: "packages/effect",
         packageName: "effect",
       },
+      {
+        packageDirectory: "packages/platform/node-shared",
+        packageName: "@effect/platform-node-shared",
+      },
     ],
     repository: "https://github.com/Effect-TS/effect.git",
     tag: (version) => `effect@${version}`,
