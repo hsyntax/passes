@@ -53,13 +53,14 @@ Adapt the example stages to your files before running them.
 
 ## Repository stages
 
-The included `stages` directory runs five sequential passes:
+The included `stages` directory runs six sequential passes:
 
 1. Step 0: Clean up tests (`gpt-6.1-sol`, `high`)
 2. Step 1: Isolate non-Effect boundaries (`gpt-6-luna`, `high`)
 3. Step 2: Apply Effect modules (`gpt-6-luna`, `xhigh`), including composition and behavior preservation
 4. Step 3: Improve data-access performance (`gpt-6-luna`, `high`)
 5. Step 4: Align domain names (`gpt-6-luna`, `high`), using established vocabulary within each bounded context
+6. Step 5: Choose Effect function constructors (`gpt-6-luna`, `high`), preserving intentional observability
 
 ## Stage format
 
