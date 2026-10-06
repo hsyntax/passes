@@ -14,17 +14,15 @@ export const nodeProcessLayer = childProcessLayer.pipe(
   Layer.provideMerge(Layer.mergeAll(fileSystemLayer, pathLayer, stdioLayer)),
 );
 
-export type ManagedProcess = ChildProcessHandle;
-
 export const startProcess = Effect.fn("Process.start")(
   (
     command: string,
     args: readonly string[],
-    cwd: string,
+    workingDirectory: string,
     input?: string | Stream.Stream<Uint8Array, PlatformError.PlatformError>,
   ) =>
     ChildProcess.make(command, [...args], {
-      cwd,
+      cwd: workingDirectory,
       detached: true,
       forceKillAfter: FORCE_KILL_AFTER,
       stdin:
@@ -40,11 +38,11 @@ export const startProcess = Effect.fn("Process.start")(
     ),
 );
 
-export const waitForExit = Effect.fn("Process.waitForExit")((proc: ManagedProcess) =>
+export const waitForExit = Effect.fn("Process.waitForExit")((proc: ChildProcessHandle) =>
   proc.exitCode.pipe(Effect.mapError((error) => new PassesError(message(error)))),
 );
 
-function readTail<E, R>(stream: Stream.Stream<Uint8Array, E, R>, limit: number) {
+function captureOutputTail<E, R>(stream: Stream.Stream<Uint8Array, E, R>, limit: number) {
   let contents = "";
   const collect = Stream.decodeText(stream).pipe(
     Stream.runForEach((chunk) =>
@@ -57,13 +55,13 @@ function readTail<E, R>(stream: Stream.Stream<Uint8Array, E, R>, limit: number) 
   return { collect, contents: () => contents };
 }
 
-export const collectProcess = Effect.fn("Process.collect")(
-  (command: string, args: readonly string[], cwd: string) =>
+export const runCommand = Effect.fn("Process.runCommand")(
+  (command: string, args: readonly string[], workingDirectory: string) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const proc = yield* startProcess(command, args, cwd);
-        const stdout = readTail(proc.stdout, 64_000);
-        const stderr = readTail(proc.stderr, 8_000);
+        const proc = yield* startProcess(command, args, workingDirectory);
+        const stdout = captureOutputTail(proc.stdout, 64_000);
+        const stderr = captureOutputTail(proc.stderr, 8_000);
         const stdoutFiber = yield* Effect.forkScoped(stdout.collect);
         const stderrFiber = yield* Effect.forkScoped(stderr.collect);
         const code = yield* waitForExit(proc);

@@ -44,8 +44,8 @@ export interface Layer {
   readonly stages: readonly Stage[];
 }
 export interface Plan {
-  readonly cwd: string;
-  readonly directory: string;
+  readonly invocationDirectory: string;
+  readonly stagesDirectory: string;
   readonly stages: readonly Stage[];
   readonly layers: readonly Layer[];
 }
@@ -136,80 +136,83 @@ const discoverStageFiles = Effect.fn((stagesDirectory: string) =>
   }),
 );
 
-export const loadPlan = Effect.fn("Stages.loadPlan")((stageDirectory: string, cwd: string) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const absolute = path.resolve(cwd, stageDirectory);
-    const stageFiles = yield* discoverStageFiles(absolute);
-    if (!stageFiles.length)
-      return yield* Effect.fail(
-        new PassesError(`${stageDirectory}: no Markdown (.md) stages found`),
-      );
-    const stages: Stage[] = [];
-    const errors: string[] = [];
-    const stageNames = new Map<string, string>();
-    const stageSlugs = new Map<string, string>();
-    for (const stagePath of stageFiles) {
-      const file = path.relative(cwd, stagePath) || stagePath;
-      try {
-        const source = yield* Effect.match(fs.readFile(stagePath), {
-          onFailure: (error) => {
-            errors.push(message(error.cause ?? error));
-            return undefined;
-          },
-          // Match Node's UTF-8 decoding, including preservation of a leading BOM.
-          onSuccess: (source) => Buffer.from(source).toString("utf8"),
-        });
-        if (source === undefined) continue;
-        const stage = parseStage(source, file);
-        const duplicate = stageNames.get(stage.name);
-        const collision = stageSlugs.get(stage.slug);
-        if (duplicate)
-          throw new PassesError(`${file}: name "${stage.name}" duplicates ${duplicate}`);
-        if (collision)
-          throw new PassesError(
-            `${file}: name "${stage.name}" has slug "${stage.slug}", which collides with ${collision}`,
-          );
-        stageNames.set(stage.name, file);
-        stageSlugs.set(stage.slug, file);
-        stages.push(stage);
-      } catch (error) {
-        errors.push(message(error));
+export const loadPlan = Effect.fn("Stages.loadPlan")(
+  (stagesDirectory: string, invocationDirectory: string) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const absoluteStagesDirectory = path.resolve(invocationDirectory, stagesDirectory);
+      const stageFiles = yield* discoverStageFiles(absoluteStagesDirectory);
+      if (!stageFiles.length)
+        return yield* Effect.fail(
+          new PassesError(`${stagesDirectory}: no Markdown (.md) stages found`),
+        );
+      const stages: Stage[] = [];
+      const errors: string[] = [];
+      const stageNames = new Map<string, string>();
+      const stageSlugs = new Map<string, string>();
+      for (const stagePath of stageFiles) {
+        const file = path.relative(invocationDirectory, stagePath) || stagePath;
+        try {
+          const source = yield* Effect.match(fs.readFile(stagePath), {
+            onFailure: (error) => {
+              errors.push(message(error.cause ?? error));
+              return undefined;
+            },
+            // Match Node's UTF-8 decoding, including preservation of a leading BOM.
+            onSuccess: (source) => Buffer.from(source).toString("utf8"),
+          });
+          if (source === undefined) continue;
+          const stage = parseStage(source, file);
+          const duplicate = stageNames.get(stage.name);
+          const collision = stageSlugs.get(stage.slug);
+          if (duplicate)
+            throw new PassesError(`${file}: name "${stage.name}" duplicates ${duplicate}`);
+          if (collision)
+            throw new PassesError(
+              `${file}: name "${stage.name}" has slug "${stage.slug}", which collides with ${collision}`,
+            );
+          stageNames.set(stage.name, file);
+          stageSlugs.set(stage.slug, file);
+          stages.push(stage);
+        } catch (error) {
+          errors.push(message(error));
+        }
       }
-    }
-    if (errors.length) {
-      return yield* Effect.fail(
-        new PassesError(`Invalid stage configuration:\n${errors.map((e) => `  ${e}`).join("\n")}`),
-      );
-    }
-    const layersByStep = new Map<number, Stage[]>();
-    for (const stage of stages) {
-      const layer = layersByStep.get(stage.step);
-      if (layer) layer.push(stage);
-      else layersByStep.set(stage.step, [stage]);
-    }
-    return {
-      cwd,
-      directory: absolute,
-      stages,
-      layers: [...layersByStep]
-        .sort(([left], [right]) => left - right)
-        .map(([step, layerStages]) => ({ step, stages: layerStages })),
-    };
-  }).pipe(
-    Effect.mapError((error) =>
-      error instanceof PassesError
-        ? error
-        : new PassesError(`Could not read stages: ${message(error)}`),
+      if (errors.length) {
+        return yield* Effect.fail(
+          new PassesError(
+            `Invalid stage configuration:\n${errors.map((e) => `  ${e}`).join("\n")}`,
+          ),
+        );
+      }
+      const layersByStep = new Map<number, Stage[]>();
+      for (const stage of stages) {
+        const layer = layersByStep.get(stage.step);
+        if (layer) layer.push(stage);
+        else layersByStep.set(stage.step, [stage]);
+      }
+      return {
+        invocationDirectory,
+        stagesDirectory: absoluteStagesDirectory,
+        stages,
+        layers: [...layersByStep]
+          .sort(([left], [right]) => left - right)
+          .map(([step, layerStages]) => ({ step, stages: layerStages })),
+      };
+    }).pipe(
+      Effect.mapError((error) =>
+        error instanceof PassesError
+          ? error
+          : new PassesError(`Could not read stages: ${message(error)}`),
+      ),
     ),
-  ),
 );
 
 export function renderPlanGraph(plan: Plan): string {
   const lines = [
     `Valid: ${plan.stages.length} stages, ${plan.layers.length} layers`,
-    `Working directory: ${plan.cwd}`,
+    `Working directory: ${plan.invocationDirectory}`,
     "",
   ];
   for (const [index, layer] of plan.layers.entries()) {

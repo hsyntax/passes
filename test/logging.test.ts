@@ -218,7 +218,7 @@ describe("run logging", () => {
   );
 
   test(
-    "retains preflight failure diagnostics in the log",
+    "retains Codex compatibility failure diagnostics in the log",
     async () => {
       const ws = workspace();
       stage(ws, "stage.md", { model: "missing-model" });

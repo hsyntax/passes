@@ -5,7 +5,7 @@ import type * as PathService from "effect/Path";
 import type * as StdioService from "effect/Stdio";
 import type { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import { message, PassesError } from "./errors.ts";
-import { collectProcess, nodeProcessLayer } from "./process.ts";
+import { runCommand, nodeProcessLayer } from "./process.ts";
 import { createRunReporter, interruptNotice, terminal } from "./reporter.ts";
 import type { Reporter, RunReporter } from "./reporter.ts";
 import { runPlan } from "./runner.ts";
@@ -96,13 +96,18 @@ function main(
         return yield* Effect.fail(new PassesError("--verbose is only supported by run"));
       if (fast && command !== "run")
         return yield* Effect.fail(new PassesError("--fast is only supported by run"));
-      const plan = yield* loadPlan(stagesDirectory, process.cwd());
+      const invocationDirectory = process.cwd();
+      const plan = yield* loadPlan(stagesDirectory, invocationDirectory);
       if (command === "validate") {
         yield* reporter.out(renderPlanGraph(plan));
         return;
       }
       // This also rejects bare repositories and Git metadata directories, before Codex starts.
-      const repository = yield* collectProcess("git", ["rev-parse", "--show-toplevel"], plan.cwd);
+      const repository = yield* runCommand(
+        "git",
+        ["rev-parse", "--show-toplevel"],
+        plan.invocationDirectory,
+      );
       if (repository.code !== 0)
         return yield* Effect.fail(
           new PassesError("Run passes from inside an existing Git checkout."),

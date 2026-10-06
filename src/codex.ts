@@ -1,6 +1,6 @@
 import { Effect, Fiber, Queue, Schema, Stream } from "effect";
 import { message, PassesError } from "./errors.ts";
-import { collectProcess, startProcess } from "./process.ts";
+import { runCommand, startProcess } from "./process.ts";
 import type { Plan, Stage } from "./stages.ts";
 
 const ModelCatalogEntry = Schema.Struct({
@@ -23,7 +23,11 @@ export function stagePrompt(stage: Stage, scopeOverride?: string): string {
   return `${prefix}${stage.prompt}\n\nAfter completing the stage, inspect your changes and commit them. Use a short subject describing the outcome. In the body, explain why and show a compact Before → After sketch when useful. Record only checks actually run. Skip empty commits.\n`;
 }
 
-export function execArgs(stage: Stage, cwd: string, fast = false): string[] {
+export function buildCodexExecArgs(
+  stage: Stage,
+  invocationDirectory: string,
+  fast = false,
+): string[] {
   return [
     "exec",
     "--approve-for-me",
@@ -33,7 +37,7 @@ export function execArgs(stage: Stage, cwd: string, fast = false): string[] {
     `model_reasoning_effort=${JSON.stringify(stage.reasoning_effort)}`,
     ...(fast ? ["--enable", "fast_mode", "-c", 'service_tier="fast"'] : []),
     "--cd",
-    cwd,
+    invocationDirectory,
     "--color",
     "never",
     "--ephemeral",
@@ -42,14 +46,14 @@ export function execArgs(stage: Stage, cwd: string, fast = false): string[] {
 }
 
 export const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
-  (cwd: string, fast = false) =>
+  (invocationDirectory: string, fast = false) =>
     Effect.scoped(
       Effect.gen(function* () {
         const input = yield* Queue.unbounded<Uint8Array>();
         const proc = yield* startProcess(
           "codex",
           ["app-server", "--listen", "stdio://", ...(fast ? ["--enable", "fast_mode"] : [])],
-          cwd,
+          invocationDirectory,
           Stream.fromQueue(input),
         );
         let stderr = "";
@@ -173,52 +177,53 @@ export const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
   ),
 );
 
-export const preflight = Effect.fn("Codex.preflight")((plan: Plan, fast = false) =>
-  Effect.gen(function* () {
-    if (process.platform === "win32")
-      return yield* Effect.fail(
-        new PassesError(
-          "passes currently supports macOS and Linux; safe process-group cancellation requires POSIX.",
-        ),
-      );
-    const version = yield* collectProcess("codex", ["--version"], plan.cwd);
-    const match = /codex(?:-cli)?\s+(\d+)\.(\d+)\.(\d+)/.exec(version.stdout);
-    if (version.code !== 0 || !match)
-      return yield* Effect.fail(
-        new PassesError(
-          `Could not determine Codex CLI version. Install Codex CLI 0.159.2 or newer. ${version.stderr.trim()}`,
-        ),
-      );
-    const [major, minor, patch] = match.slice(1).map(Number);
-    if (major === 0 && ((minor ?? 0) < 159 || (minor === 159 && (patch ?? 0) < 2)))
-      return yield* Effect.fail(
-        new PassesError(
-          `Codex ${match[0]} is too old. Install Codex CLI 0.159.2 or newer for the verified model-catalog protocol and execution flags.`,
-        ),
-      );
-    const catalog = yield* loadModelCatalog(plan.cwd, fast);
-    const errors: string[] = [];
-    for (const stage of plan.stages) {
-      const model = catalog.find((item) => item.model === stage.model);
-      if (!model)
-        errors.push(
-          `${stage.file}: model "${stage.model}" is not in the installed Codex catalog. Available models: ${catalog.map((m) => m.model).join(", ")}`,
+export const checkCodexCompatibility = Effect.fn("Codex.checkCodexCompatibility")(
+  (plan: Plan, fast = false) =>
+    Effect.gen(function* () {
+      if (process.platform === "win32")
+        return yield* Effect.fail(
+          new PassesError(
+            "passes currently supports macOS and Linux; safe process-group cancellation requires POSIX.",
+          ),
         );
-      else if (
-        !model.supportedReasoningEfforts.some(
-          (effort) => effort.reasoningEffort === stage.reasoning_effort,
+      const version = yield* runCommand("codex", ["--version"], plan.invocationDirectory);
+      const match = /codex(?:-cli)?\s+(\d+)\.(\d+)\.(\d+)/.exec(version.stdout);
+      if (version.code !== 0 || !match)
+        return yield* Effect.fail(
+          new PassesError(
+            `Could not determine Codex CLI version. Install Codex CLI 0.159.2 or newer. ${version.stderr.trim()}`,
+          ),
+        );
+      const [major, minor, patch] = match.slice(1).map(Number);
+      if (major === 0 && ((minor ?? 0) < 159 || (minor === 159 && (patch ?? 0) < 2)))
+        return yield* Effect.fail(
+          new PassesError(
+            `Codex ${match[0]} is too old. Install Codex CLI 0.159.2 or newer for the verified model-catalog protocol and execution flags.`,
+          ),
+        );
+      const catalog = yield* loadModelCatalog(plan.invocationDirectory, fast);
+      const errors: string[] = [];
+      for (const stage of plan.stages) {
+        const model = catalog.find((item) => item.model === stage.model);
+        if (!model)
+          errors.push(
+            `${stage.file}: model "${stage.model}" is not in the installed Codex catalog. Available models: ${catalog.map((m) => m.model).join(", ")}`,
+          );
+        else if (
+          !model.supportedReasoningEfforts.some(
+            (effort) => effort.reasoningEffort === stage.reasoning_effort,
+          )
         )
-      )
-        errors.push(
-          `${stage.file}: reasoning_effort "${stage.reasoning_effort}" is unsupported for model "${stage.model}". Supported: ${model.supportedReasoningEfforts.map((e) => e.reasoningEffort).join(", ") || "none"}`,
+          errors.push(
+            `${stage.file}: reasoning_effort "${stage.reasoning_effort}" is unsupported for model "${stage.model}". Supported: ${model.supportedReasoningEfforts.map((e) => e.reasoningEffort).join(", ") || "none"}`,
+          );
+      }
+      if (errors.length)
+        return yield* Effect.fail(
+          new PassesError(
+            `Model compatibility check failed:\n${errors.map((error) => `  ${error}`).join("\n")}`,
+          ),
         );
-    }
-    if (errors.length)
-      return yield* Effect.fail(
-        new PassesError(
-          `Model compatibility check failed:\n${errors.map((error) => `  ${error}`).join("\n")}`,
-        ),
-      );
-    return catalog;
-  }),
+      return catalog;
+    }),
 );

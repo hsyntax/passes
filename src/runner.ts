@@ -1,14 +1,20 @@
 import { Effect, Fiber, Stream } from "effect";
-import { execArgs, preflight, stagePrompt } from "./codex.ts";
+import { buildCodexExecArgs, checkCodexCompatibility, stagePrompt } from "./codex.ts";
 import { message, PassesError } from "./errors.ts";
-import { collectProcess, createLineReporter, startProcess, waitForExit } from "./process.ts";
+import { createLineReporter, runCommand, startProcess, waitForExit } from "./process.ts";
 import type { Reporter } from "./reporter.ts";
 import type { Plan, Stage } from "./stages.ts";
 
 const MAX_CONCURRENT_STAGES = 4;
 
 const runStage = Effect.fn("Runner.runStage")(
-  (stage: Stage, cwd: string, reporter: Reporter, scopeOverride?: string, fast = false) =>
+  (
+    stage: Stage,
+    invocationDirectory: string,
+    reporter: Reporter,
+    scopeOverride?: string,
+    fast = false,
+  ) =>
     Effect.scoped(
       Effect.gen(function* () {
         yield* reporter.out(`${stage.name}: starting`);
@@ -24,8 +30,8 @@ const runStage = Effect.fn("Runner.runStage")(
         );
         const proc = yield* startProcess(
           "codex",
-          execArgs(stage, cwd, fast),
-          cwd,
+          buildCodexExecArgs(stage, invocationDirectory, fast),
+          invocationDirectory,
           stagePrompt(stage, scopeOverride),
         );
         const stdoutFiber = yield* Effect.forkScoped(
@@ -58,58 +64,65 @@ const runStage = Effect.fn("Runner.runStage")(
     ),
 );
 
-const pushCommits = Effect.fn("Runner.pushCommits")((cwd: string, reporter: Reporter) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const remotes = yield* collectProcess("git", ["remote"], cwd);
-      if (remotes.code !== 0)
-        return yield* Effect.fail(new PassesError(`Could not list Git remotes: ${remotes.stderr}`));
-      if (!remotes.stdout.trim()) {
-        yield* reporter.out("No Git remote configured; skipping push.");
-        return;
-      }
-      yield* reporter.out("All stages completed; pushing commits...");
-      const stdout = createLineReporter((line) => reporter.detail(`[git push] ${line}`));
-      const stderr = createLineReporter((line) =>
-        reporter.detail(`[git push stderr] ${line}`, "stderr"),
-      );
-      yield* Effect.addFinalizer(() =>
-        Effect.all([stdout.end(), stderr.end()], { discard: true }).pipe(
-          Effect.catch(() => Effect.void),
-        ),
-      );
-      const proc = yield* startProcess("git", ["-c", "push.autoSetupRemote=true", "push"], cwd);
-      const stdoutFiber = yield* Effect.forkScoped(
-        Stream.decodeText(proc.stdout).pipe(Stream.runForEach((chunk) => stdout.data(chunk))),
-      );
-      const stderrFiber = yield* Effect.forkScoped(
-        Stream.decodeText(proc.stderr).pipe(Stream.runForEach((chunk) => stderr.data(chunk))),
-      );
-      const processExit = yield* waitForExit(proc);
-      yield* Effect.all([Fiber.join(stdoutFiber), Fiber.join(stderrFiber)]).pipe(
-        Effect.timeout("1 second"),
-        Effect.mapError(
-          () =>
-            new PassesError(
-              "git push exited but a descendant kept its output pipe open; check the remote before retrying.",
-            ),
-        ),
-      );
-      if (processExit !== 0)
-        return yield* Effect.fail(
-          new PassesError(
-            `git push failed with exit code ${processExit}; local commits are retained.`,
+const pushPendingCommits = Effect.fn("Runner.pushPendingCommits")(
+  (invocationDirectory: string, reporter: Reporter) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const remotes = yield* runCommand("git", ["remote"], invocationDirectory);
+        if (remotes.code !== 0)
+          return yield* Effect.fail(
+            new PassesError(`Could not list Git remotes: ${remotes.stderr}`),
+          );
+        if (!remotes.stdout.trim()) {
+          yield* reporter.out("No Git remote configured; skipping push.");
+          return;
+        }
+        yield* reporter.out("All stages completed; pushing commits...");
+        const stdout = createLineReporter((line) => reporter.detail(`[git push] ${line}`));
+        const stderr = createLineReporter((line) =>
+          reporter.detail(`[git push stderr] ${line}`, "stderr"),
+        );
+        yield* Effect.addFinalizer(() =>
+          Effect.all([stdout.end(), stderr.end()], { discard: true }).pipe(
+            Effect.catch(() => Effect.void),
           ),
         );
-      yield* reporter.out("Git push completed.");
-    }),
-  ),
+        const proc = yield* startProcess(
+          "git",
+          ["-c", "push.autoSetupRemote=true", "push"],
+          invocationDirectory,
+        );
+        const stdoutFiber = yield* Effect.forkScoped(
+          Stream.decodeText(proc.stdout).pipe(Stream.runForEach((chunk) => stdout.data(chunk))),
+        );
+        const stderrFiber = yield* Effect.forkScoped(
+          Stream.decodeText(proc.stderr).pipe(Stream.runForEach((chunk) => stderr.data(chunk))),
+        );
+        const processExit = yield* waitForExit(proc);
+        yield* Effect.all([Fiber.join(stdoutFiber), Fiber.join(stderrFiber)]).pipe(
+          Effect.timeout("1 second"),
+          Effect.mapError(
+            () =>
+              new PassesError(
+                "git push exited but a descendant kept its output pipe open; check the remote before retrying.",
+              ),
+          ),
+        );
+        if (processExit !== 0)
+          return yield* Effect.fail(
+            new PassesError(
+              `git push failed with exit code ${processExit}; local commits are retained.`,
+            ),
+          );
+        yield* reporter.out("Git push completed.");
+      }),
+    ),
 );
 
 export const runPlan = Effect.fn("Runner.runPlan")(
   (plan: Plan, reporter: Reporter, scopeOverride?: string, fast = false) =>
     Effect.gen(function* () {
-      const catalog = yield* preflight(plan, fast);
+      const catalog = yield* checkCodexCompatibility(plan, fast);
       const fastModels = new Set(
         catalog
           .filter(
@@ -140,18 +153,28 @@ export const runPlan = Effect.fn("Runner.runPlan")(
         yield* Effect.forEach(
           layer.stages,
           (stage) =>
-            runStage(stage, plan.cwd, reporter, scopeOverride, fastModels.has(stage.model)),
+            runStage(
+              stage,
+              plan.invocationDirectory,
+              reporter,
+              scopeOverride,
+              fastModels.has(stage.model),
+            ),
           {
             concurrency: MAX_CONCURRENT_STAGES,
             discard: true,
           },
         );
       }
-      const head = yield* collectProcess("git", ["log", "-1", "--format=%h %s"], plan.cwd);
+      const head = yield* runCommand(
+        "git",
+        ["log", "-1", "--format=%h %s"],
+        plan.invocationDirectory,
+      );
       yield* reporter.out(
         head.code === 0 ? `Latest commit: ${head.stdout.trim()}` : "No commit available.",
       );
-      yield* pushCommits(plan.cwd, reporter);
+      yield* pushPendingCommits(plan.invocationDirectory, reporter);
       yield* reporter.out(`Finished: ${plan.stages.length} stages completed`);
     }),
 );

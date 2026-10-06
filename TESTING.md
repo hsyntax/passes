@@ -58,11 +58,11 @@ writes, cancellation with partial-line flushing, bounded failure excerpts, and
 `--verbose` streaming to separate terminal channels. They also check unique log
 files with owner-only permissions, XDG state-directory selection, rejection of
 checkout destinations (including symlinks), setup failures before Codex starts,
-preflight diagnostics, and no logs for validation/help/version. Test logs stay in
-the temporary workspace outside its Git checkout.
+Codex compatibility diagnostics, and no logs for validation/help/version. Test
+logs stay in the temporary workspace outside its Git checkout.
 
-Execution cases cover preflight rejection before any stage starts, paginated and
-malformed catalogs, missing/repeated cursors, unsupported models and efforts,
+Execution cases cover Codex compatibility rejection before any stage starts,
+paginated and malformed catalogs, missing/repeated cursors, unsupported models and efforts,
 concurrent stages and layer barriers, nested invocation directories, dirty file
 preservation, argument escaping, failure diagnostics, cancellation, and cleanup
 of TERM-ignoring siblings and descendants. Streaming checks exercise bytewise
@@ -133,7 +133,8 @@ bundled stage validation, and `git diff --check`. No live Codex calls were made.
 
 The PR review found a duplicate checkout probe: the CLI already runs
 `git rev-parse --show-toplevel` to locate the checkout before creating a log,
-then Codex preflight ran `git rev-parse --is-inside-work-tree` again. The first
+then the Codex compatibility check ran `git rev-parse --is-inside-work-tree`
+again. The first
 command rejects bare repositories and Git metadata directories as well as paths
 outside a repository. It remains the single checkout check on every invocation;
 no repository state is cached across runs.
