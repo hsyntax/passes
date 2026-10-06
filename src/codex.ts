@@ -26,7 +26,7 @@ export function stagePrompt(stage: Stage, scopeOverride?: string): string {
 export function buildCodexExecArgs(
   stage: Stage,
   invocationDirectory: string,
-  fast = false,
+  fastModeEnabled = false,
 ): string[] {
   return [
     "exec",
@@ -35,7 +35,7 @@ export function buildCodexExecArgs(
     stage.model,
     "-c",
     `model_reasoning_effort=${JSON.stringify(stage.reasoning_effort)}`,
-    ...(fast ? ["--enable", "fast_mode", "-c", 'service_tier="fast"'] : []),
+    ...(fastModeEnabled ? ["--enable", "fast_mode", "-c", 'service_tier="fast"'] : []),
     "--cd",
     invocationDirectory,
     "--color",
@@ -46,13 +46,18 @@ export function buildCodexExecArgs(
 }
 
 const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
-  (invocationDirectory: string, fast: boolean) =>
+  (invocationDirectory: string, fastModeRequested: boolean) =>
     Effect.scoped(
       Effect.gen(function* () {
         const input = yield* Queue.unbounded<Uint8Array>();
         const proc = yield* startProcess(
           "codex",
-          ["app-server", "--listen", "stdio://", ...(fast ? ["--enable", "fast_mode"] : [])],
+          [
+            "app-server",
+            "--listen",
+            "stdio://",
+            ...(fastModeRequested ? ["--enable", "fast_mode"] : []),
+          ],
           invocationDirectory,
           Stream.fromQueue(input),
         );
@@ -72,7 +77,7 @@ const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
         let pending = "";
         let catalog: readonly CatalogModel[] | undefined;
         const catalogModels: CatalogModel[] = [];
-        const cursors = new Set<string>();
+        const seenCatalogCursors = new Set<string>();
         const sendRpcRequest = Effect.fn((request: object) =>
           Queue.offer(input, new TextEncoder().encode(`${JSON.stringify(request)}\n`)).pipe(
             Effect.asVoid,
@@ -114,10 +119,10 @@ const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
             const catalogPage = yield* Schema.decodeUnknownEffect(ModelCatalogPage)(rpc.result);
             catalogModels.push(...catalogPage.data);
             if (catalogPage.nextCursor) {
-              if (cursors.has(catalogPage.nextCursor))
+              if (seenCatalogCursors.has(catalogPage.nextCursor))
                 return yield* Effect.fail(new PassesError("server repeated its pagination cursor"));
-              cursors.add(catalogPage.nextCursor);
-              if (cursors.size > 100)
+              seenCatalogCursors.add(catalogPage.nextCursor);
+              if (seenCatalogCursors.size > 100)
                 return yield* Effect.fail(new PassesError("catalog exceeded 100 pages"));
               yield* requestModelCatalogPage(catalogPage.nextCursor);
               return true;
@@ -184,7 +189,7 @@ const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
 );
 
 export const checkCodexCompatibility = Effect.fn("Codex.checkCodexCompatibility")(
-  (plan: Plan, fast = false) =>
+  (plan: Plan, fastModeRequested = false) =>
     Effect.gen(function* () {
       if (process.platform === "win32")
         return yield* Effect.fail(
@@ -207,7 +212,7 @@ export const checkCodexCompatibility = Effect.fn("Codex.checkCodexCompatibility"
             `Codex ${match[0]} is too old. Install Codex CLI 0.159.2 or newer for the verified model-catalog protocol and execution flags.`,
           ),
         );
-      const catalog = yield* loadModelCatalog(plan.invocationDirectory, fast);
+      const catalog = yield* loadModelCatalog(plan.invocationDirectory, fastModeRequested);
       const errors: string[] = [];
       for (const stage of plan.stages) {
         const model = catalog.find((item) => item.model === stage.model);

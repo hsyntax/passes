@@ -43,7 +43,7 @@ export function interruptNotice(line: string): void {
 }
 
 export const createRunReporter = Effect.fn("Reporter.createRunReporter")(
-  (repository: string, verbose: boolean, onFailure: (error: PassesError) => void) =>
+  (checkoutRoot: string, verbose: boolean, onFailure: (error: PassesError) => void) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -51,66 +51,75 @@ export const createRunReporter = Effect.fn("Reporter.createRunReporter")(
       const stateHome = process.env.XDG_STATE_HOME || path.join(home, ".local", "state");
       if (!path.isAbsolute(stateHome))
         return yield* Effect.fail(new PassesError("XDG_STATE_HOME must be an absolute path"));
-      const directory = path.join(stateHome, "passes", "runs");
+      const logDirectory = path.join(stateHome, "passes", "runs");
 
       // Resolve the closest existing ancestor so symlinks cannot place logs in the checkout.
-      let ancestor = directory;
+      let ancestor = logDirectory;
       while (!(yield* fs.exists(ancestor))) {
         const parent = path.dirname(ancestor);
         if (parent === ancestor)
           return yield* Effect.fail(
-            new PassesError(`Could not resolve log directory ${directory}`),
+            new PassesError(`Could not resolve log directory ${logDirectory}`),
           );
         ancestor = parent;
       }
       const resolvedAncestor = yield* fs.realPath(ancestor);
-      const resolvedDirectory = path.resolve(resolvedAncestor, path.relative(ancestor, directory));
-      const resolvedRepository = yield* fs.realPath(repository);
-      const within = path.relative(resolvedRepository, resolvedDirectory);
+      const resolvedLogDirectory = path.resolve(
+        resolvedAncestor,
+        path.relative(ancestor, logDirectory),
+      );
+      const resolvedCheckoutRoot = yield* fs.realPath(checkoutRoot);
+      const relativeLogDirectory = path.relative(resolvedCheckoutRoot, resolvedLogDirectory);
       if (
-        within === "" ||
-        (!path.isAbsolute(within) && within !== ".." && !within.startsWith(`..${path.sep}`))
+        relativeLogDirectory === "" ||
+        (!path.isAbsolute(relativeLogDirectory) &&
+          relativeLogDirectory !== ".." &&
+          !relativeLogDirectory.startsWith(`..${path.sep}`))
       )
         return yield* Effect.fail(
           new PassesError("Log directory is inside the checkout; set XDG_STATE_HOME outside it"),
         );
 
-      yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
+      yield* fs.makeDirectory(logDirectory, { recursive: true, mode: 0o700 });
       const logPath = path.join(
-        directory,
+        logDirectory,
         `${new Date().toISOString().replaceAll(":", "-")}-${crypto.randomUUID()}.log`,
       );
-      const file = yield* fs.open(logPath, { flag: "wx", mode: 0o600 });
+      const logFile = yield* fs.open(logPath, { flag: "wx", mode: 0o600 });
       const lock = yield* Semaphore.make(1);
-      let failed = false;
-      let tail = "";
+      let logWriteFailed = false;
+      let recentOutput = "";
 
       const reportLogFailure = (error: unknown) => {
-        if (failed) return;
-        failed = true;
+        if (logWriteFailed) return;
+        logWriteFailed = true;
         onFailure(
           new PassesError(`Could not write run log ${logPath}: ${message(error)}`, {
             cause: error,
           }),
         );
       };
-      const record = Effect.fn((line: string, includeTail = false) =>
+      const writeLogLine = Effect.fn((line: string, includeRecentOutput = false) =>
         lock.withPermit(
           Effect.gen(function* () {
-            if (!failed)
-              yield* file
+            if (!logWriteFailed)
+              yield* logFile
                 .writeAll(new TextEncoder().encode(`${line}\n`))
                 .pipe(Effect.catch((error) => Effect.sync(() => reportLogFailure(error))));
-            if (includeTail)
-              tail = `${tail}${line}\n`.slice(-8_000).split("\n").slice(-21).join("\n");
+            if (includeRecentOutput)
+              recentOutput = `${recentOutput}${line}\n`
+                .slice(-8_000)
+                .split("\n")
+                .slice(-21)
+                .join("\n");
           }),
         ),
       );
       const reporter: Reporter = {
-        out: (line) => Effect.andThen(record(line), terminal.out(line)),
-        err: (line) => Effect.andThen(record(line), terminal.err(line)),
+        out: (line) => Effect.andThen(writeLogLine(line), terminal.out(line)),
+        err: (line) => Effect.andThen(writeLogLine(line), terminal.err(line)),
         detail: (line, stream = "stdout") =>
-          record(line, true).pipe(
+          writeLogLine(line, true).pipe(
             Effect.andThen(
               verbose
                 ? stream === "stderr"
@@ -125,14 +134,14 @@ export const createRunReporter = Effect.fn("Reporter.createRunReporter")(
         reporter,
         path: logPath,
         context: (line: string) =>
-          record(line).pipe(Effect.andThen(verbose ? terminal.out(line) : Effect.void)),
+          writeLogLine(line).pipe(Effect.andThen(verbose ? terminal.out(line) : Effect.void)),
         finish: (unsuccessful: boolean) =>
           Effect.gen(function* () {
-            yield* file.sync.pipe(
+            yield* logFile.sync.pipe(
               Effect.catch((error) => Effect.sync(() => reportLogFailure(error))),
             );
-            if (unsuccessful && !verbose && tail)
-              yield* terminal.err(`Recent output:\n${tail.trimEnd()}`);
+            if (unsuccessful && !verbose && recentOutput)
+              yield* terminal.err(`Recent output:\n${recentOutput.trimEnd()}`);
             yield* terminal.out(`Log: ${logPath}`);
           }),
       };

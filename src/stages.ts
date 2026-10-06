@@ -122,30 +122,31 @@ const discoverStageFiles = Effect.fn((stagesDirectory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const directory = yield* fs
+    const stagesDirectoryInfo = yield* fs
       .stat(stagesDirectory)
       .pipe(Effect.mapError((error) => error.cause ?? error));
-    if (directory.type !== "Directory")
+    if (stagesDirectoryInfo.type !== "Directory")
       return yield* Effect.fail(new PassesError(`${stagesDirectory}: expected a stages directory`));
     const stageFiles: string[] = [];
-    const walk: (dir: string) => Effect.Effect<void, unknown, never> = Effect.fn((dir: string) =>
-      Effect.gen(function* () {
-        // The platform API returns names only; Dirent flags preserve the no-symlink walk.
-        // readdir has no abort option: interruption stops the fiber, not the native read.
-        const entries = yield* Effect.tryPromise({
-          try: () => readdir(dir, { withFileTypes: true }),
-          catch: (error) => error,
-        });
-        entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-        for (const entry of entries) {
-          const entryPath = path.join(dir, entry.name);
-          // Never follow links, including links that could leave the supplied stage tree.
-          if (entry.isDirectory()) yield* walk(entryPath);
-          else if (entry.isFile() && /\.md$/i.test(entry.name)) stageFiles.push(entryPath);
-        }
-      }),
-    );
-    yield* walk(stagesDirectory);
+    const visitStageDirectory: (directory: string) => Effect.Effect<void, unknown, never> =
+      Effect.fn((directory: string) =>
+        Effect.gen(function* () {
+          // The platform API returns names only; Dirent flags preserve the no-symlink walk.
+          // readdir has no abort option: interruption stops the fiber, not the native read.
+          const entries = yield* Effect.tryPromise({
+            try: () => readdir(directory, { withFileTypes: true }),
+            catch: (error) => error,
+          });
+          entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+          for (const entry of entries) {
+            const entryPath = path.join(directory, entry.name);
+            // Never follow links, including links that could leave the supplied stage tree.
+            if (entry.isDirectory()) yield* visitStageDirectory(entryPath);
+            else if (entry.isFile() && /\.md$/i.test(entry.name)) stageFiles.push(entryPath);
+          }
+        }),
+      );
+    yield* visitStageDirectory(stagesDirectory);
     return stageFiles;
   }),
 );
@@ -163,8 +164,8 @@ export const loadPlan = Effect.fn("Stages.loadPlan")(
         );
       const stages: Stage[] = [];
       const errors: unknown[] = [];
-      const stageNames = new Map<string, string>();
-      const stageSlugs = new Map<string, string>();
+      const stageFilesByName = new Map<string, string>();
+      const stageFilesBySlug = new Map<string, string>();
       for (const stagePath of stageFiles) {
         const file = path.relative(invocationDirectory, stagePath) || stagePath;
         const result = yield* fs.readFile(stagePath).pipe(
@@ -179,20 +180,20 @@ export const loadPlan = Effect.fn("Stages.loadPlan")(
           continue;
         }
         const stage = result.success;
-        const duplicate = stageNames.get(stage.name);
-        const collision = stageSlugs.get(stage.slug);
-        if (duplicate) {
-          errors.push(`${file}: name "${stage.name}" duplicates ${duplicate}`);
+        const duplicateNameFile = stageFilesByName.get(stage.name);
+        const collidingSlugFile = stageFilesBySlug.get(stage.slug);
+        if (duplicateNameFile) {
+          errors.push(`${file}: name "${stage.name}" duplicates ${duplicateNameFile}`);
           continue;
         }
-        if (collision) {
+        if (collidingSlugFile) {
           errors.push(
-            `${file}: name "${stage.name}" has slug "${stage.slug}", which collides with ${collision}`,
+            `${file}: name "${stage.name}" has slug "${stage.slug}", which collides with ${collidingSlugFile}`,
           );
           continue;
         }
-        stageNames.set(stage.name, file);
-        stageSlugs.set(stage.slug, file);
+        stageFilesByName.set(stage.name, file);
+        stageFilesBySlug.set(stage.slug, file);
         stages.push(stage);
       }
       if (errors.length) {
@@ -205,8 +206,8 @@ export const loadPlan = Effect.fn("Stages.loadPlan")(
       }
       const layersByStep = new Map<number, Stage[]>();
       for (const stage of stages) {
-        const layer = layersByStep.get(stage.step);
-        if (layer) layer.push(stage);
+        const layerStages = layersByStep.get(stage.step);
+        if (layerStages) layerStages.push(stage);
         else layersByStep.set(stage.step, [stage]);
       }
       return {

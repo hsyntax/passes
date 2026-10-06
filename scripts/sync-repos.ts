@@ -42,9 +42,9 @@ const repositories: ReadonlyArray<Repository> = [
   },
 ];
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const reposDirectory = resolve(root, "repos");
-const lockfilePath = resolve(root, "bun.lock");
+const projectDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const reposDirectory = resolve(projectDirectory, "repos");
+const lockfilePath = resolve(projectDirectory, "bun.lock");
 const execFileAsync = promisify(execFile);
 
 async function runGit(directory: string, ...args: ReadonlyArray<string>): Promise<string> {
@@ -55,23 +55,26 @@ async function runGit(directory: string, ...args: ReadonlyArray<string>): Promis
   return stdout.trim();
 }
 
-function dependencyVersion(lockfile: Lockfile, releasePackage: RepositoryPackage): string {
-  const resolution = lockfile.packages?.[releasePackage.packageName]?.[0];
+function readResolvedDependencyVersion(
+  lockfile: Lockfile,
+  repositoryPackage: RepositoryPackage,
+): string {
+  const resolution = lockfile.packages?.[repositoryPackage.packageName]?.[0];
   if (typeof resolution !== "string") {
     throw new Error(
-      `Could not find a resolved version for ${releasePackage.packageName} in bun.lock`,
+      `Could not find a resolved version for ${repositoryPackage.packageName} in bun.lock`,
     );
   }
 
   // Bun stores registry resolutions as "name@version", including scoped names.
-  const prefix = `${releasePackage.packageName}@`;
+  const prefix = `${repositoryPackage.packageName}@`;
   const version = resolution.slice(prefix.length);
   if (
     !resolution.startsWith(prefix) ||
     !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)
   ) {
     throw new Error(
-      `Unsupported resolved version for ${releasePackage.packageName}: ${resolution}`,
+      `Unsupported resolved version for ${repositoryPackage.packageName}: ${resolution}`,
     );
   }
 
@@ -90,11 +93,11 @@ function normalizeRemote(remote: string): string {
 // selects the tag; each package must match its own resolved version.
 async function syncRepository(
   repository: Repository,
-  versions: ReadonlyArray<string>,
+  resolvedPackageVersions: ReadonlyArray<string>,
 ): Promise<void> {
   const destination = resolve(reposDirectory, repository.directory);
   const releasePackage = repository.packages[0];
-  const version = versions[0];
+  const version = resolvedPackageVersions[0];
   if (version === undefined) throw new Error(`Missing version for ${releasePackage.packageName}`);
   const tag = repository.tag(version);
 
@@ -113,7 +116,7 @@ async function syncRepository(
         repository.repository,
         destination,
       ],
-      { cwd: root },
+      { cwd: projectDirectory },
     );
   } else {
     if (!existsSync(resolve(destination, ".git"))) {
@@ -146,7 +149,7 @@ async function syncRepository(
   }
 
   for (const [index, repositoryPackage] of repository.packages.entries()) {
-    const expectedVersion = versions[index];
+    const expectedVersion = resolvedPackageVersions[index];
     const packageJsonPath = resolve(
       destination,
       repositoryPackage.packageDirectory,
@@ -174,25 +177,27 @@ async function syncRepository(
 
   // Resolve this fixed pair in argument order, peeling annotated tags to their commit.
   const commits = (await runGit(destination, "rev-parse", `${tag}^{commit}`, "HEAD")).split("\n");
-  const [expectedCommit, actualCommit] = commits;
-  if (commits.length !== 2 || !actualCommit || actualCommit !== expectedCommit) {
+  const [releaseCommit, checkoutCommit] = commits;
+  if (commits.length !== 2 || !checkoutCommit || checkoutCommit !== releaseCommit) {
     throw new Error(`repos/${repository.directory} did not check out ${tag}`);
   }
 
-  console.log(`Ready: repos/${repository.directory} ${tag} (${actualCommit.slice(0, 12)})`);
+  console.log(`Ready: repos/${repository.directory} ${tag} (${checkoutCommit.slice(0, 12)})`);
 }
 
 async function main(): Promise<void> {
   const lockfile = Bun.JSONC.parse(readFileSync(lockfilePath, "utf8")) as Lockfile;
   const targets = repositories.map((repository) => ({
     repository,
-    versions: repository.packages.map((repositoryPackage) =>
-      dependencyVersion(lockfile, repositoryPackage),
+    resolvedPackageVersions: repository.packages.map((repositoryPackage) =>
+      readResolvedDependencyVersion(lockfile, repositoryPackage),
     ),
   }));
   mkdirSync(reposDirectory, { recursive: true });
   const results = await Promise.allSettled(
-    targets.map(({ repository, versions }) => syncRepository(repository, versions)),
+    targets.map(({ repository, resolvedPackageVersions }) =>
+      syncRepository(repository, resolvedPackageVersions),
+    ),
   );
   const failures = results.flatMap((result, index) =>
     result.status === "rejected"

@@ -45,13 +45,13 @@ const main = Effect.fn("Cli.main")(() =>
       const positionalArguments: string[] = [];
       let scopeOverride: string | undefined;
       let verbose = false;
-      let fastMode = false;
+      let fastModeRequested = false;
       for (let index = 0; index < args.length; index += 1) {
         const argument = args[index]!;
         if (argument === "--fast") {
-          if (fastMode)
+          if (fastModeRequested)
             return yield* Effect.fail(new PassesError("--fast may be supplied only once"));
-          fastMode = true;
+          fastModeRequested = true;
           continue;
         }
         if (argument === "--verbose") {
@@ -86,7 +86,7 @@ const main = Effect.fn("Cli.main")(() =>
       }
       if (verbose && cliCommand !== "run")
         return yield* Effect.fail(new PassesError("--verbose is only supported by run"));
-      if (fastMode && cliCommand !== "run")
+      if (fastModeRequested && cliCommand !== "run")
         return yield* Effect.fail(new PassesError("--fast is only supported by run"));
       const invocationDirectory = yield* Effect.sync(() => process.cwd());
       const plan = yield* loadPlan(stagesDirectory, invocationDirectory);
@@ -95,17 +95,17 @@ const main = Effect.fn("Cli.main")(() =>
         return;
       }
       // This also rejects bare repositories and Git metadata directories, before Codex starts.
-      const repositoryRoot = yield* runCommand(
+      const checkoutProbe = yield* runCommand(
         "git",
         ["rev-parse", "--show-toplevel"],
         plan.invocationDirectory,
       );
-      if (repositoryRoot.code !== 0)
+      if (checkoutProbe.code !== 0)
         return yield* Effect.fail(
           new PassesError("Run passes from inside an existing Git checkout."),
         );
       const runReporter = yield* createRunReporter(
-        repositoryRoot.stdout.trim(),
+        checkoutProbe.stdout.trim(),
         verbose,
         (error) => {
           runLogWriteFailure = error;
@@ -121,7 +121,7 @@ const main = Effect.fn("Cli.main")(() =>
       yield* reporter.out(`Log: ${runReporter.path}`);
       const runStartedAt = yield* Effect.map(DateTime.now, DateTime.formatIso);
       yield* runReporter.context(`Started: ${runStartedAt}\n${renderPlanGraph(plan)}`);
-      yield* runPlan(plan, runReporter.reporter, scopeOverride, fastMode);
+      yield* runPlan(plan, runReporter.reporter, scopeOverride, fastModeRequested);
     }).pipe(
       Effect.onExit((exit) =>
         Effect.gen(function* () {

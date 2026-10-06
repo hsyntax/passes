@@ -13,7 +13,7 @@ const runStage = Effect.fn("Runner.runStage")(
     invocationDirectory: string,
     reporter: Reporter,
     scopeOverride: string | undefined,
-    fast: boolean,
+    fastModeEnabled: boolean,
   ) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -28,7 +28,7 @@ const runStage = Effect.fn("Runner.runStage")(
         );
         const proc = yield* startProcess(
           "codex",
-          buildCodexExecArgs(stage, invocationDirectory, fast),
+          buildCodexExecArgs(stage, invocationDirectory, fastModeEnabled),
           invocationDirectory,
           stagePrompt(stage, scopeOverride),
         );
@@ -126,11 +126,11 @@ const pushPendingCommits = Effect.fn("Runner.pushPendingCommits")(
 );
 
 export const runPlan = Effect.fn("Runner.runPlan")(
-  (plan: Plan, reporter: Reporter, scopeOverride?: string, fast = false) =>
+  (plan: Plan, reporter: Reporter, scopeOverride?: string, fastModeRequested = false) =>
     Effect.gen(function* () {
-      const catalog = yield* checkCodexCompatibility(plan, fast);
-      const fastModels = new Set(
-        fast
+      const catalog = yield* checkCodexCompatibility(plan, fastModeRequested);
+      const fastModeModels = new Set(
+        fastModeRequested
           ? catalog
               .filter(
                 (model) =>
@@ -142,10 +142,10 @@ export const runPlan = Effect.fn("Runner.runPlan")(
               .map((model) => model.model)
           : [],
       );
-      if (fast) {
+      if (fastModeRequested) {
         for (const model of new Set(plan.stages.map((stage) => stage.model))) {
           yield* reporter.out(
-            fastModels.has(model)
+            fastModeModels.has(model)
               ? `${model}: fast mode requested.`
               : `${model}: fast mode not advertised; using Codex defaults.`,
           );
@@ -167,7 +167,7 @@ export const runPlan = Effect.fn("Runner.runPlan")(
               plan.invocationDirectory,
               reporter,
               scopeOverride,
-              fastModels.has(stage.model),
+              fastModeModels.has(stage.model),
             ),
           {
             concurrency: MAX_CONCURRENT_STAGES,
@@ -175,13 +175,15 @@ export const runPlan = Effect.fn("Runner.runPlan")(
           },
         );
       }
-      const head = yield* runCommand(
+      const latestCommit = yield* runCommand(
         "git",
         ["log", "-1", "--format=%h %s"],
         plan.invocationDirectory,
       );
       yield* reporter.out(
-        head.code === 0 ? `Latest commit: ${head.stdout.trim()}` : "No commit available.",
+        latestCommit.code === 0
+          ? `Latest commit: ${latestCommit.stdout.trim()}`
+          : "No commit available.",
       );
       yield* pushPendingCommits(plan.invocationDirectory, reporter);
       yield* reporter.out(`Finished: ${plan.stages.length} stages completed`);
