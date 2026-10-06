@@ -4,7 +4,7 @@ import { message, PassesError } from "./errors.ts";
 import { collectProcess } from "./process.ts";
 import { createRunReporter, terminal } from "./reporter.ts";
 import { runPlan } from "./runner.ts";
-import { loadPlan, parseScope, renderGraph } from "./stages.ts";
+import { loadPlan, parseScope, renderPlanGraph } from "./stages.ts";
 
 const HELP = `passes 0.1.0
 
@@ -60,12 +60,12 @@ function main(args: readonly string[]) {
       });
       index += 1;
     }
-    const [command, directory] = positional;
+    const [command, stagesDirectory] = positional;
     if (
       positional.length !== 2 ||
       (command !== "run" && command !== "validate") ||
-      !directory ||
-      directory.startsWith("--")
+      !stagesDirectory ||
+      stagesDirectory.startsWith("--")
     ) {
       return yield* Effect.fail(
         new PassesError(
@@ -75,9 +75,9 @@ function main(args: readonly string[]) {
     }
     if (verbose && command !== "run")
       return yield* Effect.fail(new PassesError("--verbose is only supported by run"));
-    const plan = yield* loadPlan(directory, process.cwd());
+    const plan = yield* loadPlan(stagesDirectory, process.cwd());
     if (command === "validate") {
-      yield* Effect.sync(() => reporter.out(renderGraph(plan)));
+      yield* Effect.sync(() => reporter.out(renderPlanGraph(plan)));
       return;
     }
     const repository = yield* collectProcess("git", ["rev-parse", "--show-toplevel"], plan.cwd);
@@ -99,7 +99,7 @@ function main(args: readonly string[]) {
     reporter = log.reporter;
     yield* Effect.sync(() => {
       reporter.out(`Log: ${log.path}`);
-      log.context(`Started: ${new Date().toISOString()}\n${renderGraph(plan)}`);
+      log.context(`Started: ${new Date().toISOString()}\n${renderPlanGraph(plan)}`);
     });
     yield* runPlan(plan, log.reporter, scope);
   });

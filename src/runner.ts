@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import { execArgs, preflight, stagePrompt } from "./codex.ts";
 import { PassesError } from "./errors.ts";
-import { collectProcess, lineReporter, startProcess, waitForExit } from "./process.ts";
+import { collectProcess, createLineReporter, startProcess, waitForExit } from "./process.ts";
 import type { Reporter } from "./reporter.ts";
 import type { Plan, Stage } from "./stages.ts";
 
@@ -12,8 +12,8 @@ const runStage = Effect.fn("Runner.runStage")(
     Effect.scoped(
       Effect.gen(function* () {
         yield* Effect.sync(() => reporter.out(`${stage.name}: starting`));
-        const stdout = lineReporter((line) => reporter.detail(`[${stage.name}] ${line}`));
-        const stderr = lineReporter((line) =>
+        const stdout = createLineReporter((line) => reporter.detail(`[${stage.name}] ${line}`));
+        const stderr = createLineReporter((line) =>
           reporter.detail(`[${stage.name} stderr] ${line}`, "stderr"),
         );
         // Register first so process termination/draining runs before the final line flush.
@@ -27,11 +27,11 @@ const runStage = Effect.fn("Runner.runStage")(
         proc.child.stdout.on("data", stdout.data);
         proc.child.stderr.on("data", stderr.data);
         proc.child.stdin.end(stagePrompt(stage, scopeOverride));
-        const result = yield* waitForExit(proc);
-        if (result.code !== 0)
+        const processExit = yield* waitForExit(proc);
+        if (processExit.code !== 0)
           return yield* Effect.fail(
             new PassesError(
-              `${stage.name} (${stage.file}): failed with ${result.signal ? `signal ${result.signal}` : `exit code ${result.code}`}`,
+              `${stage.name} (${stage.file}): failed with ${processExit.signal ? `signal ${processExit.signal}` : `exit code ${processExit.code}`}`,
             ),
           );
         // Drain final output, but never hang forever on a descendant holding the pipe open.
@@ -65,8 +65,10 @@ const pushCommits = Effect.fn("Runner.pushCommits")((cwd: string, reporter: Repo
         return;
       }
       yield* Effect.sync(() => reporter.out("All stages completed; pushing commits..."));
-      const stdout = lineReporter((line) => reporter.detail(`[git push] ${line}`));
-      const stderr = lineReporter((line) => reporter.detail(`[git push stderr] ${line}`, "stderr"));
+      const stdout = createLineReporter((line) => reporter.detail(`[git push] ${line}`));
+      const stderr = createLineReporter((line) =>
+        reporter.detail(`[git push stderr] ${line}`, "stderr"),
+      );
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           stdout.end();
@@ -77,7 +79,7 @@ const pushCommits = Effect.fn("Runner.pushCommits")((cwd: string, reporter: Repo
       proc.child.stdout.on("data", stdout.data);
       proc.child.stderr.on("data", stderr.data);
       proc.child.stdin.end();
-      const result = yield* waitForExit(proc);
+      const processExit = yield* waitForExit(proc);
       yield* Effect.promise(() => proc.closed).pipe(
         Effect.timeout(1_000),
         Effect.mapError(
@@ -87,10 +89,10 @@ const pushCommits = Effect.fn("Runner.pushCommits")((cwd: string, reporter: Repo
             ),
         ),
       );
-      if (result.code !== 0)
+      if (processExit.code !== 0)
         return yield* Effect.fail(
           new PassesError(
-            `git push failed with ${result.signal ? `signal ${result.signal}` : `exit code ${result.code}`}; local commits are retained.`,
+            `git push failed with ${processExit.signal ? `signal ${processExit.signal}` : `exit code ${processExit.code}`}; local commits are retained.`,
           ),
         );
       yield* Effect.sync(() => reporter.out("Git push completed."));

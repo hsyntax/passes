@@ -4,25 +4,25 @@ import { Effect, Schema } from "effect";
 import { parseDocument } from "yaml";
 import { message, PassesError } from "./errors.ts";
 
-const FrontmatterText = Schema.String.check(
+const FrontmatterString = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isPattern(/^[^\p{Cc}\p{Cf}]+$/u),
 );
-const ScopeText = FrontmatterText.check(
+const ScopeString = FrontmatterString.check(
   Schema.isPattern(/\S/),
   Schema.isPattern(/^[^\p{Zl}\p{Zp}]+$/u),
 );
-const StageFrontmatter = Schema.Struct({
-  name: FrontmatterText,
+const StageFrontmatterSchema = Schema.Struct({
+  name: FrontmatterString,
   step: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
-  model: FrontmatterText,
-  reasoning_effort: FrontmatterText,
-  scope: Schema.optionalKey(ScopeText),
+  model: FrontmatterString,
+  reasoning_effort: FrontmatterString,
+  scope: Schema.optionalKey(ScopeString),
 });
 
-export function parseScope(value: unknown): string {
+export function parseScope(scope: unknown): string {
   try {
-    return Schema.decodeUnknownSync(ScopeText)(value);
+    return Schema.decodeUnknownSync(ScopeString)(scope);
   } catch {
     throw new PassesError(
       "scope must be a nonempty single-line string without control or format characters",
@@ -51,8 +51,8 @@ export interface Plan {
   readonly layers: readonly Layer[];
 }
 
-export const slugify = (name: string): string =>
-  name
+export const stageSlug = (stageName: string): string =>
+  stageName
     .normalize("NFKD")
     .replace(/\p{M}/gu, "")
     .toLowerCase()
@@ -71,26 +71,26 @@ export function parseStage(source: string, file: string): Stage {
       `${file}: YAML: ${[...yaml.errors, ...yaml.warnings].map((e) => e.message).join("; ")}`,
     );
   }
-  let raw: unknown;
+  let frontmatter: unknown;
   try {
-    raw = yaml.toJS({ maxAliasCount: 0 });
+    frontmatter = yaml.toJS({ maxAliasCount: 0 });
   } catch (error) {
     throw new PassesError(`${file}: YAML: ${message(error)} (aliases are not supported)`);
   }
-  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    raw = Object.fromEntries(
-      Object.entries(raw).map(([key, value]) => [
+  if (frontmatter && typeof frontmatter === "object" && !Array.isArray(frontmatter)) {
+    frontmatter = Object.fromEntries(
+      Object.entries(frontmatter).map(([key, value]) => [
         key,
         typeof value === "string" && key !== "scope" ? value.trim() : value,
       ]),
     );
   }
-  let stageFrontmatter: typeof StageFrontmatter.Type;
+  let stageFrontmatter: typeof StageFrontmatterSchema.Type;
   try {
-    stageFrontmatter = Schema.decodeUnknownSync(StageFrontmatter, {
+    stageFrontmatter = Schema.decodeUnknownSync(StageFrontmatterSchema, {
       onExcessProperty: "error",
       errors: "all",
-    })(raw);
+    })(frontmatter);
   } catch (error) {
     throw new PassesError(`${file}: frontmatter: ${message(error)}`);
   }
@@ -101,7 +101,7 @@ export function parseStage(source: string, file: string): Stage {
   if (!prompt.trim()) throw new PassesError(`${file}: prompt body must not be empty`);
   if (prompt.includes("\0"))
     throw new PassesError(`${file}: prompt body must not contain NUL bytes`);
-  const slug = slugify(stageFrontmatter.name);
+  const slug = stageSlug(stageFrontmatter.name);
   if (!slug) throw new PassesError(`${file}: name must contain at least one letter or number`);
   return { ...stageFrontmatter, slug, prompt, file };
 }
@@ -207,7 +207,7 @@ export const loadPlan = Effect.fn("Stages.loadPlan")((stageDirectory: string, cw
   ),
 );
 
-export function renderGraph(plan: Plan): string {
+export function renderPlanGraph(plan: Plan): string {
   const lines = [
     `Valid: ${plan.stages.length} stages, ${plan.layers.length} layers`,
     `Working directory: ${plan.cwd}`,

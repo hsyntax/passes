@@ -3,17 +3,17 @@ import { message, PassesError } from "./errors.ts";
 import { collectProcess, startProcess } from "./process.ts";
 import type { Plan, Stage } from "./stages.ts";
 
-const CatalogEntry = Schema.Struct({
+const ModelCatalogEntry = Schema.Struct({
   model: Schema.NonEmptyString,
   supportedReasoningEfforts: Schema.Array(
     Schema.Struct({ reasoningEffort: Schema.NonEmptyString }),
   ),
 });
-const CatalogPage = Schema.Struct({
-  data: Schema.Array(CatalogEntry),
+const ModelCatalogPage = Schema.Struct({
+  data: Schema.Array(ModelCatalogEntry),
   nextCursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
-export type CatalogModel = typeof CatalogEntry.Type;
+export type CatalogModel = typeof ModelCatalogEntry.Type;
 
 export function stagePrompt(stage: Stage, scopeOverride?: string): string {
   const scope = scopeOverride ?? stage.scope;
@@ -50,31 +50,33 @@ export const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")((cwd: string
         let initialized = false;
         const catalogModels: CatalogModel[] = [];
         const cursors = new Set<string>();
-        const finish = (result: Effect.Effect<readonly CatalogModel[], PassesError>) => {
+        const finishCatalogLoad = (
+          catalogLoad: Effect.Effect<readonly CatalogModel[], PassesError>,
+        ) => {
           if (finished) return;
           finished = true;
-          resume(result);
+          resume(catalogLoad);
         };
-        const fail = (error: unknown) =>
-          finish(
+        const failCatalogLoad = (error: unknown) =>
+          finishCatalogLoad(
             Effect.fail(
               new PassesError(
                 `Codex model catalog: ${message(error)}${stderr ? `\n${stderr.trim()}` : ""}`,
               ),
             ),
           );
-        const send = (request: object) => {
+        const sendRpcRequest = (request: object) => {
           proc.child.stdin.write(`${JSON.stringify(request)}\n`);
         };
-        const list = (cursor?: string) => {
+        const requestModelCatalogPage = (cursor?: string) => {
           requestId += 1;
-          send({
+          sendRpcRequest({
             id: requestId,
             method: "model/list",
             params: { limit: 100, includeHidden: true, ...(cursor ? { cursor } : {}) },
           });
         };
-        const handleCatalogResponse = (line: string) => {
+        const processModelCatalogResponse = (line: string) => {
           if (finished || !line.trim()) return;
           try {
             const response: unknown = JSON.parse(line);
@@ -86,25 +88,25 @@ export const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")((cwd: string
             if (!("result" in rpc)) throw new Error("response has no result");
             if (!initialized) {
               initialized = true;
-              send({ method: "initialized", params: {} });
-              list();
+              sendRpcRequest({ method: "initialized", params: {} });
+              requestModelCatalogPage();
               return;
             }
-            const page = Schema.decodeUnknownSync(CatalogPage)(rpc.result);
-            catalogModels.push(...page.data);
-            if (page.nextCursor) {
-              if (cursors.has(page.nextCursor))
+            const catalogPage = Schema.decodeUnknownSync(ModelCatalogPage)(rpc.result);
+            catalogModels.push(...catalogPage.data);
+            if (catalogPage.nextCursor) {
+              if (cursors.has(catalogPage.nextCursor))
                 throw new Error("server repeated its pagination cursor");
-              cursors.add(page.nextCursor);
+              cursors.add(catalogPage.nextCursor);
               if (cursors.size > 100) throw new Error("catalog exceeded 100 pages");
-              list(page.nextCursor);
+              requestModelCatalogPage(catalogPage.nextCursor);
             } else if (!catalogModels.length) {
               throw new Error(
                 "server returned no models; check Codex installation/provider configuration",
               );
-            } else finish(Effect.succeed(catalogModels));
+            } else finishCatalogLoad(Effect.succeed(catalogModels));
           } catch (error) {
-            fail(error);
+            failCatalogLoad(error);
           }
         };
         // setEncoding preserves split Unicode characters across chunks.
@@ -113,23 +115,26 @@ export const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")((cwd: string
           pending += chunk;
           let newline = pending.indexOf("\n");
           while (newline >= 0) {
-            handleCatalogResponse(pending.slice(0, newline));
+            processModelCatalogResponse(pending.slice(0, newline));
             pending = pending.slice(newline + 1);
             newline = pending.indexOf("\n");
           }
-          if (pending.length > 1_048_576) fail("response exceeded 1 MiB without a newline");
+          if (pending.length > 1_048_576)
+            failCatalogLoad("response exceeded 1 MiB without a newline");
         };
         const onStderr = (chunk: Buffer) => {
           stderr = (stderr + chunk.toString()).slice(-8_000);
         };
         proc.child.stdout.on("data", onData);
         proc.child.stderr.on("data", onStderr);
-        void proc.result.then(
-          (result) =>
-            fail(`app-server exited before returning a catalog (${result.code ?? result.signal})`),
-          fail,
+        void proc.exit.then(
+          (processExit) =>
+            failCatalogLoad(
+              `app-server exited before returning a catalog (${processExit.code ?? processExit.signal})`,
+            ),
+          failCatalogLoad,
         );
-        send({
+        sendRpcRequest({
           id: 1,
           method: "initialize",
           params: {

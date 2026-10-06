@@ -4,13 +4,13 @@ import { Effect } from "effect";
 import { message, PassesError } from "./errors.ts";
 
 const GRACE_MS = 500;
-export interface Result {
+export interface ProcessExit {
   readonly code: number | null;
   readonly signal: NodeJS.Signals | null;
 }
 export interface ManagedProcess {
   readonly child: ChildProcessWithoutNullStreams;
-  readonly result: Promise<Result>;
+  readonly exit: Promise<ProcessExit>;
   readonly closed: Promise<void>;
 }
 
@@ -44,23 +44,23 @@ export const startProcess = Effect.fn((command: string, args: readonly string[],
           shell: false,
         });
         // Never leave a rejected promise unobserved while setup is still attaching consumers.
-        const result = new Promise<Result>((resolve, reject) => {
+        const exit = new Promise<ProcessExit>((resolve, reject) => {
           child.once("error", (error) =>
             reject(new PassesError(`Could not start ${command}: ${message(error)}`)),
           );
           child.once("exit", (code, signal) => resolve({ code, signal }));
         });
-        void result.catch(() => {});
+        void exit.catch(() => {});
         const closed = new Promise<void>((resolve) => {
           child.once("close", () => resolve());
         });
         // EPIPE during cancellation or early CLI failure must not crash the parent.
         child.stdin.on("error", () => {});
-        return { child, result, closed };
+        return { child, exit, closed };
       },
       catch: (error) => new PassesError(`Could not start ${command}: ${message(error)}`),
     }),
-    ({ child, result, closed }) =>
+    ({ child, exit, closed }) =>
       Effect.gen(function* () {
         child.stdin.destroy();
         yield* Effect.ensuring(
@@ -71,7 +71,7 @@ export const startProcess = Effect.fn((command: string, args: readonly string[],
               while (groupExists(child) && Date.now() < until) yield* Effect.sleep(20);
               if (groupExists(child)) signalGroup(child, "SIGKILL");
             }
-            yield* Effect.promise(() => Promise.all([result.catch(() => undefined), closed])).pipe(
+            yield* Effect.promise(() => Promise.all([exit.catch(() => undefined), closed])).pipe(
               Effect.timeoutOption(1_000),
               Effect.asVoid,
             );
@@ -87,7 +87,7 @@ export const startProcess = Effect.fn((command: string, args: readonly string[],
 
 export const waitForExit = Effect.fn((proc: ManagedProcess) =>
   Effect.tryPromise({
-    try: () => proc.result,
+    try: () => proc.exit,
     catch: (error) => (error instanceof PassesError ? error : new PassesError(message(error))),
   }),
 );
@@ -105,10 +105,10 @@ export const collectProcess = Effect.fn((command: string, args: readonly string[
         stderr = (stderr + data.toString()).slice(-8_000);
       });
       proc.child.stdin.end();
-      const result = yield* waitForExit(proc);
+      const processExit = yield* waitForExit(proc);
       // exit can precede final pipe data; close marks both streams drained.
       yield* Effect.promise(() => proc.closed);
-      return { ...result, stdout, stderr };
+      return { ...processExit, stdout, stderr };
     }),
   ).pipe(
     Effect.timeout(10_000),
@@ -117,7 +117,7 @@ export const collectProcess = Effect.fn((command: string, args: readonly string[
 );
 
 /** Prefix streaming output without retaining unbounded transcripts or splitting UTF-8. */
-export function lineReporter(write: (line: string) => void) {
+export function createLineReporter(write: (line: string) => void) {
   const decoder = new StringDecoder("utf8");
   let pending = "";
   function flush(full: boolean): void {
