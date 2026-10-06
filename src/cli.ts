@@ -32,7 +32,7 @@ let loggingFailure: PassesError | undefined;
 function main() {
   return Effect.scoped(
     Effect.gen(function* () {
-      const args = yield* Stdio.Stdio.pipe(Effect.flatMap((stdio) => stdio.args));
+      const args = yield* Stdio.Stdio.use(({ args }) => args);
       if (args.length === 1 && args[0] === "--help") {
         yield* reporter.out(HELP);
         return;
@@ -112,10 +112,11 @@ function main() {
       runLog = log;
       reporter = log.reporter;
       yield* reporter.out(`Log: ${log.path}`);
-      const startedAt = yield* Clock.currentTimeMillis;
-      yield* log.context(
-        `Started: ${DateTime.formatIso(DateTime.makeUnsafe(startedAt))}\n${renderPlanGraph(plan)}`,
+      const startedAt = yield* Clock.currentTimeMillis.pipe(
+        Effect.map(DateTime.makeUnsafe),
+        Effect.map(DateTime.formatIso),
       );
+      yield* log.context(`Started: ${startedAt}\n${renderPlanGraph(plan)}`);
       yield* runPlan(plan, log.reporter, scope, fast).pipe(
         Effect.mapError((error) => new PassesError(message(error))),
       );
