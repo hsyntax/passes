@@ -29,8 +29,8 @@ let reporter: Reporter = terminal;
 let activeRunReporter: RunReporter | undefined;
 let runLogWriteFailure: PassesError | undefined;
 
-function main() {
-  return Effect.scoped(
+const main = Effect.fn("Cli.main")(() =>
+  Effect.scoped(
     Effect.gen(function* () {
       const args = yield* Stdio.Stdio.use(({ args }) => args);
       if (args.length === 1 && args[0] === "--help") {
@@ -138,8 +138,8 @@ function main() {
         }),
       ),
     ),
-  );
-}
+  ),
+);
 
 let interrupted: NodeJS.Signals | undefined;
 const cancelRun = (signal: NodeJS.Signals) => {
