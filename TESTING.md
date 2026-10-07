@@ -21,7 +21,7 @@ bun dist/passes.js validate stages
 
 ## Automated checks
 
-- 149 CLI and repository-sync behavior tests passing, zero failures
+- 165 process, CLI, and repository-sync behavior tests passing, zero failures
 - Strict TypeScript typecheck passing
 - Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
@@ -429,3 +429,36 @@ Checks run on macOS with Bun 1.4.2: `bun run typecheck`,
 `bun test test/sync-repos.test.ts` (13 passing), and `bun run check` (typecheck,
 lint, formatting, 157 passing tests, and build). Final documentation formatting
 and `git diff --check` also passed.
+
+## Fewer repository-sync filesystem calls
+
+Reviewed external operations in `src` and `scripts` and the vendored Effect
+`FileSystem`, `NodeFileSystem`, `catchReason`, and `RequestResolver` implementations.
+The catalog is already shared within a run, its pages depend on prior cursors,
+and Git already resolves the fixed pair of revisions in one command. Native
+filesystem reads accept one path, so putting the three manifests behind a
+resolver would still perform three reads.
+
+Before → After for the three release manifests: three `access` calls plus three
+`readFile` calls → three `readFile` calls. A subprocess preload observes those
+native APIs while forwarding to the real filesystem; the focused measurement
+passed against both implementations. This is a 50% reduction in manifest API
+calls, with no timing claim. Tests retain the after-count assertion and verify
+the paths are read once in package order.
+
+`Effect.catchReason("PlatformError", "NotFound", ...)` preserves the existing
+package-specific missing-metadata diagnostic without an existence probe. Other
+read failures propagate; byte decoding and JSON validation are unchanged. Each
+sync still fetches the remote tag, reads fresh manifests, and checks every
+package's own name/version before verifying HEAD. Reads stay sequential and
+fail fast, with the platform's existing abort support and process scopes.
+
+Regression tests cover all three missing manifests, a directory in place of a
+manifest, wrong package identity, independently resolved package versions, and
+no later manifest reads after a validation failure. Existing local-remote tests
+cover moved tags, cloning, dirty checkouts, cancellation, and descendant cleanup.
+
+Checks run on macOS with Bun 1.4.2: baseline sync tests (13 passing), the native
+manifest-call measurement before and after, `bun run check` (typecheck, lint,
+formatting, 165 passing tests, and build), final documentation formatting, and
+`git diff --check`. No network or live model calls were made.

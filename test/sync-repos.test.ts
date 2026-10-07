@@ -97,14 +97,30 @@ exec ${shellQuote(gitExecutable!)} "$@"
   );
   chmodSync(wrapper, 0o755);
 
-  function launch() {
-    const child = Bun.spawn([process.execPath, script], {
-      cwd: ws.root,
-      env: ws.env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+  const filesystemEvents = join(ws.root, "filesystem.jsonl");
+  function launch(measureFilesystem = false) {
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        ...(measureFilesystem
+          ? ["--preload", join(import.meta.dir, "fixtures/filesystem.ts")]
+          : []),
+        script,
+      ],
+      {
+        cwd: ws.root,
+        env: measureFilesystem
+          ? {
+              ...ws.env,
+              PASSES_TEST_MANIFEST_DIRECTORY: destination,
+              PASSES_TEST_FILESYSTEM_EVENTS: filesystemEvents,
+            }
+          : ws.env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
     const result = Promise.all([
       child.exited,
       new Response(child.stdout).text(),
@@ -113,7 +129,29 @@ exec ${shellQuote(gitExecutable!)} "$@"
     return { child, result };
   }
   const sync = () => launch().result;
-  return { ws, destination, remote, git, upstream, gitAt, release, tag, sync, launch };
+  async function measuredSync() {
+    const result = await launch(true).result;
+    return {
+      ...result,
+      operations: readFileSync(filesystemEvents, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { operation: string; path: string }),
+    };
+  }
+  return {
+    ws,
+    destination,
+    remote,
+    git,
+    upstream,
+    gitAt,
+    release,
+    tag,
+    sync,
+    launch,
+    measuredSync,
+  };
 }
 
 describe("repository sync revision checks", () => {
@@ -189,6 +227,27 @@ describe("repository sync revision checks", () => {
 
 describe("repository sync Effect boundaries", () => {
   test(
+    "reads each release manifest once without an existence probe",
+    async () => {
+      const { release, measuredSync } = syncWorkspace(true);
+      const result = await measuredSync();
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toContain(`(${release.slice(0, 12)})`);
+      expect(result.operations.filter(({ operation }) => operation === "access")).toHaveLength(0);
+      expect(
+        result.operations
+          .filter(({ operation }) => operation === "readFile")
+          .map(({ path }) => path),
+      ).toEqual([
+        "packages/effect/package.json",
+        "packages/platform/bun/package.json",
+        "packages/platform/node-shared/package.json",
+      ]);
+    },
+    timeout,
+  );
+
+  test(
     "clones and verifies a missing checkout",
     async () => {
       const { destination, git, release, tag, sync } = syncWorkspace(true);
@@ -211,6 +270,83 @@ describe("repository sync Effect boundaries", () => {
       expect(result.code).toBe(1);
       expect(result.stderr).toContain("has local changes");
       expect(readFileSync(join(destination, "release.txt"), "utf8")).toBe("local edit\n");
+    },
+    timeout,
+  );
+
+  test.each([
+    ["packages/effect", "effect"],
+    ["packages/platform/bun", "@effect/platform-bun"],
+    ["packages/platform/node-shared", "@effect/platform-node-shared"],
+  ])(
+    "retains the missing-manifest diagnostic for %s",
+    async (directory, name) => {
+      const { ws, destination, git, sync } = syncWorkspace(false);
+      const path = join(destination, directory, "package.json");
+      rmSync(path);
+      git("add", ".");
+      git("commit", "--quiet", "-m", "Remove manifest");
+      ws.env.PASSES_TEST_SKIP_CHECKOUT = "1";
+      const result = await sync();
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(`${name} package metadata is missing at ${path}`);
+      expect(result.stdout).not.toContain("Ready:");
+    },
+    timeout,
+  );
+
+  test(
+    "preserves read failures other than missing manifests",
+    async () => {
+      const { ws, destination, git, sync } = syncWorkspace(false);
+      const path = join(destination, "packages/effect/package.json");
+      rmSync(path);
+      mkdirSync(path);
+      git("add", ".");
+      git("commit", "--quiet", "-m", "Replace manifest with directory");
+      ws.env.PASSES_TEST_SKIP_CHECKOUT = "1";
+      const result = await sync();
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("FileSystem.readFile");
+      expect(result.stderr).toContain(path);
+      expect(result.stderr).not.toContain("package metadata is missing");
+      expect(result.stdout).not.toContain("Ready:");
+    },
+    timeout,
+  );
+
+  test.each([
+    { name: "@effect/platform-node-shared", resolvedVersion: "4.0.1" },
+    { name: "@effect/platform-bun", resolvedVersion: "4.0.2" },
+  ])(
+    "rejects $name against the package's own resolved version $resolvedVersion",
+    async ({ name, resolvedVersion }) => {
+      const { ws, destination, git, measuredSync } = syncWorkspace(false);
+      writeFileSync(
+        join(destination, "packages/platform/bun/package.json"),
+        JSON.stringify({ name, version: "4.0.1" }),
+      );
+      const lockfilePath = join(ws.root, "bun.lock");
+      const lockfile = JSON.parse(readFileSync(lockfilePath, "utf8")) as {
+        packages: Record<string, string[]>;
+      };
+      lockfile.packages["@effect/platform-bun"] = [`@effect/platform-bun@${resolvedVersion}`];
+      writeFileSync(lockfilePath, JSON.stringify(lockfile));
+      if (name !== "@effect/platform-bun") {
+        git("add", ".");
+        git("commit", "--quiet", "-m", "Wrong package identity");
+      }
+      ws.env.PASSES_TEST_SKIP_CHECKOUT = "1";
+      const result = await measuredSync();
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(
+        `contains ${name}@4.0.1, expected @effect/platform-bun@${resolvedVersion}`,
+      );
+      expect(result.stdout).not.toContain("Ready:");
+      expect(result.operations).toEqual([
+        { operation: "readFile", path: "packages/effect/package.json" },
+        { operation: "readFile", path: "packages/platform/bun/package.json" },
+      ]);
     },
     timeout,
   );

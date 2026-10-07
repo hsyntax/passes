@@ -195,17 +195,16 @@ const syncRepository = Effect.fn("Repos.syncRepository")(function* (
       repositoryPackage.packageDirectory,
       "package.json",
     );
-    if (!(yield* fs.exists(packageJsonPath))) {
-      return yield* Effect.fail(
-        new Error(
-          `${repositoryPackage.packageName} package metadata is missing at ${packageJsonPath}`,
+    const source = yield* fs.readFile(packageJsonPath).pipe(
+      Effect.catchReason("PlatformError", "NotFound", () =>
+        Effect.fail(
+          new Error(
+            `${repositoryPackage.packageName} package metadata is missing at ${packageJsonPath}`,
+          ),
         ),
-      );
-    }
-
-    const source = yield* fs
-      .readFile(packageJsonPath)
-      .pipe(Effect.map((bytes) => Buffer.from(bytes).toString("utf8")));
+      ),
+      Effect.map((bytes) => Buffer.from(bytes).toString("utf8")),
+    );
     const packageJson = yield* Effect.try({
       try: () =>
         JSON.parse(source) as { readonly name?: unknown; readonly version?: unknown } | null,
