@@ -116,8 +116,8 @@ const readResolvedDependencyVersion = Effect.fn(function* (
   return version;
 });
 
-function normalizeRemote(remote: string): string {
-  return remote
+function normalizeRemoteUrl(remoteUrl: string): string {
+  return remoteUrl
     .replace(/^git\+/, "")
     .replace(/\/$/, "")
     .replace(/\.git$/, "")
@@ -131,14 +131,14 @@ const syncRepository = Effect.fn("Repos.syncRepository")(function* (
   resolvedPackageVersions: readonly [string, ...string[]],
 ) {
   const fs = yield* FileSystem.FileSystem;
-  const destination = resolve(reposDirectory, repository.directory);
+  const checkoutDirectory = resolve(reposDirectory, repository.directory);
   const releasePackage = repository.packages[0];
-  const version = resolvedPackageVersions[0];
-  const tag = repository.tag(version);
+  const releaseVersion = resolvedPackageVersions[0];
+  const releaseTag = repository.tag(releaseVersion);
 
-  if (!(yield* fs.exists(destination))) {
+  if (!(yield* fs.exists(checkoutDirectory))) {
     yield* Console.log(
-      `Cloning ${releasePackage.packageName}@${version} into repos/${repository.directory}`,
+      `Cloning ${releasePackage.packageName}@${releaseVersion} into repos/${repository.directory}`,
     );
     yield* runGit(
       projectDirectory,
@@ -146,27 +146,27 @@ const syncRepository = Effect.fn("Repos.syncRepository")(function* (
       "--depth=1",
       "--filter=blob:none",
       "--branch",
-      tag,
+      releaseTag,
       repository.repository,
-      destination,
+      checkoutDirectory,
     );
   } else {
-    if (!(yield* fs.exists(resolve(destination, ".git")))) {
+    if (!(yield* fs.exists(resolve(checkoutDirectory, ".git")))) {
       return yield* Effect.fail(
         new Error(`repos/${repository.directory} exists but is not a Git repository`),
       );
     }
 
-    const remote = yield* runGit(destination, "remote", "get-url", "origin");
-    if (normalizeRemote(remote) !== normalizeRemote(repository.repository)) {
+    const originUrl = yield* runGit(checkoutDirectory, "remote", "get-url", "origin");
+    if (normalizeRemoteUrl(originUrl) !== normalizeRemoteUrl(repository.repository)) {
       return yield* Effect.fail(
         new Error(
-          `repos/${repository.directory} has unexpected origin ${remote}; expected ${repository.repository}`,
+          `repos/${repository.directory} has unexpected origin ${originUrl}; expected ${repository.repository}`,
         ),
       );
     }
 
-    const status = yield* runGit(destination, "status", "--porcelain");
+    const status = yield* runGit(checkoutDirectory, "status", "--porcelain");
     if (status !== "") {
       return yield* Effect.fail(
         new Error(
@@ -176,61 +176,69 @@ const syncRepository = Effect.fn("Repos.syncRepository")(function* (
     }
 
     yield* runGit(
-      destination,
+      checkoutDirectory,
       "fetch",
       "--depth=1",
       "--force",
       "origin",
-      `refs/tags/${tag}:refs/tags/${tag}`,
+      `refs/tags/${releaseTag}:refs/tags/${releaseTag}`,
     );
-    yield* runGit(destination, "checkout", "--detach", tag);
+    yield* runGit(checkoutDirectory, "checkout", "--detach", releaseTag);
   }
 
   for (const [index, repositoryPackage] of repository.packages.entries()) {
     const expectedVersion = resolvedPackageVersions[index];
-    const packageJsonPath = resolve(
-      destination,
+    const packageManifestPath = resolve(
+      checkoutDirectory,
       repositoryPackage.packageDirectory,
       "package.json",
     );
-    const source = yield* fs.readFile(packageJsonPath).pipe(
+    const manifestSource = yield* fs.readFile(packageManifestPath).pipe(
       Effect.catchReason("PlatformError", "NotFound", () =>
         Effect.fail(
           new Error(
-            `${repositoryPackage.packageName} package metadata is missing at ${packageJsonPath}`,
+            `${repositoryPackage.packageName} package metadata is missing at ${packageManifestPath}`,
           ),
         ),
       ),
       Effect.map((bytes) => Buffer.from(bytes).toString("utf8")),
     );
-    const packageJson = yield* Effect.try({
+    const packageManifest = yield* Effect.try({
       try: () =>
-        JSON.parse(source) as { readonly name?: unknown; readonly version?: unknown } | null,
+        JSON.parse(manifestSource) as {
+          readonly name?: unknown;
+          readonly version?: unknown;
+        } | null,
       catch: (error) => error,
     });
     if (
-      packageJson?.name !== repositoryPackage.packageName ||
-      packageJson?.version !== expectedVersion
+      packageManifest?.name !== repositoryPackage.packageName ||
+      packageManifest?.version !== expectedVersion
     ) {
       return yield* Effect.fail(
         new Error(
-          `Tag ${tag} contains ${String(packageJson?.name)}@${String(packageJson?.version)}, expected ${repositoryPackage.packageName}@${expectedVersion}`,
+          `Tag ${releaseTag} contains ${String(packageManifest?.name)}@${String(packageManifest?.version)}, expected ${repositoryPackage.packageName}@${expectedVersion}`,
         ),
       );
     }
   }
 
   // Resolve this fixed pair in argument order, peeling annotated tags to their commit.
-  const commits = yield* runGit(destination, "rev-parse", `${tag}^{commit}`, "HEAD").pipe(
-    Effect.map((output) => output.split("\n")),
-  );
+  const commits = yield* runGit(
+    checkoutDirectory,
+    "rev-parse",
+    `${releaseTag}^{commit}`,
+    "HEAD",
+  ).pipe(Effect.map((output) => output.split("\n")));
   const [releaseCommit, checkoutCommit] = commits;
   if (commits.length !== 2 || !checkoutCommit || checkoutCommit !== releaseCommit) {
-    return yield* Effect.fail(new Error(`repos/${repository.directory} did not check out ${tag}`));
+    return yield* Effect.fail(
+      new Error(`repos/${repository.directory} did not check out ${releaseTag}`),
+    );
   }
 
   yield* Console.log(
-    `Ready: repos/${repository.directory} ${tag} (${checkoutCommit.slice(0, 12)})`,
+    `Ready: repos/${repository.directory} ${releaseTag} (${checkoutCommit.slice(0, 12)})`,
   );
 });
 

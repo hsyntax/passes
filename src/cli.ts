@@ -128,7 +128,8 @@ const main = Effect.fn("Cli.main")(() =>
           if (runLogWriteFailure) {
             process.exitCode = 1;
             yield* terminal.err(`passes: ${runLogWriteFailure.message}`);
-          } else if (interrupted) process.exitCode = interrupted === "SIGINT" ? 130 : 143;
+          } else if (interruptionSignal)
+            process.exitCode = interruptionSignal === "SIGINT" ? 130 : 143;
           else if (Exit.isFailure(exit)) {
             process.exitCode = 1;
             yield* reporter.err(`passes: ${message(Cause.squash(exit.cause))}`);
@@ -140,10 +141,10 @@ const main = Effect.fn("Cli.main")(() =>
   ),
 );
 
-let interrupted: NodeJS.Signals | undefined;
+let interruptionSignal: NodeJS.Signals | undefined;
 const cancelRun = (signal: NodeJS.Signals) => {
-  if (interrupted) return;
-  interrupted = signal;
+  if (interruptionSignal) return;
+  interruptionSignal = signal;
   interruptNotice(`${signal}: cancelling active stages...`);
   interrupt();
 };

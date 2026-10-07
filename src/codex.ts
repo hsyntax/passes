@@ -74,19 +74,19 @@ const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
         );
         let requestId = 1;
         let initialized = false;
-        let pending = "";
-        let catalog: readonly CatalogModel[] | undefined;
+        let pendingResponseLine = "";
+        let completedCatalog: readonly CatalogModel[] | undefined;
         const catalogModels: CatalogModel[] = [];
         const seenCatalogCursors = new Set<string>();
-        const sendRpcRequest = Effect.fn((request: object) =>
-          Queue.offer(input, new TextEncoder().encode(`${JSON.stringify(request)}\n`)).pipe(
+        const sendRpcMessage = Effect.fn((rpcMessage: object) =>
+          Queue.offer(input, new TextEncoder().encode(`${JSON.stringify(rpcMessage)}\n`)).pipe(
             Effect.asVoid,
           ),
         );
         const requestModelCatalogPage = Effect.fn((cursor?: string) =>
           Effect.gen(function* () {
             requestId += 1;
-            yield* sendRpcRequest({
+            yield* sendRpcMessage({
               id: requestId,
               method: "model/list",
               params: { limit: 100, includeHidden: true, ...(cursor ? { cursor } : {}) },
@@ -112,7 +112,7 @@ const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
               return yield* Effect.fail(new PassesError("response has no result"));
             if (!initialized) {
               initialized = true;
-              yield* sendRpcRequest({ method: "initialized", params: {} });
+              yield* sendRpcMessage({ method: "initialized", params: {} });
               yield* requestModelCatalogPage();
               return true;
             }
@@ -133,7 +133,7 @@ const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
                   "server returned no models; check Codex installation/provider configuration",
                 ),
               );
-            catalog = [...catalogModels];
+            completedCatalog = [...catalogModels];
             return false;
           },
           Effect.mapError(
@@ -146,15 +146,15 @@ const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
         );
         const processModelCatalogChunk = Effect.fn((chunk: string) =>
           Effect.gen(function* () {
-            pending += chunk;
-            let newline = pending.indexOf("\n");
+            pendingResponseLine += chunk;
+            let newline = pendingResponseLine.indexOf("\n");
             while (newline >= 0) {
-              const line = pending.slice(0, newline);
-              pending = pending.slice(newline + 1);
+              const line = pendingResponseLine.slice(0, newline);
+              pendingResponseLine = pendingResponseLine.slice(newline + 1);
               if (!(yield* processModelCatalogLine(line))) return false;
-              newline = pending.indexOf("\n");
+              newline = pendingResponseLine.indexOf("\n");
             }
-            if (pending.length > 1_048_576)
+            if (pendingResponseLine.length > 1_048_576)
               return yield* Effect.fail(
                 new PassesError("Codex model catalog: response exceeded 1 MiB without a newline"),
               );
@@ -166,7 +166,7 @@ const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
           Stream.runForEachWhile(processModelCatalogChunk),
           Effect.forkScoped,
         );
-        yield* sendRpcRequest({
+        yield* sendRpcMessage({
           id: 1,
           method: "initialize",
           params: {
@@ -175,7 +175,7 @@ const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
           },
         });
         yield* Fiber.join(stdoutFiber);
-        if (catalog) return catalog;
+        if (completedCatalog) return completedCatalog;
         return yield* Effect.fail(
           new PassesError("Codex model catalog: app-server exited before returning a catalog"),
         );

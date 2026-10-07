@@ -84,32 +84,32 @@ export const runCommand = Effect.fn("Process.runCommand")(
 
 /** Prefix streamed process output while bounding the memory used for a line. */
 export function createLineReporter<E, R>(write: (line: string) => Effect.Effect<void, E, R>) {
-  let pending = "";
+  let pendingLine = "";
   // These callbacks consume the buffer at call time. Effect.fn would defer that
   // mutation until execution, changing which call owns each batch of lines.
-  function flush(full: boolean): Effect.Effect<void, E, R> {
+  function flushLines(includePartialLine: boolean): Effect.Effect<void, E, R> {
     const lines: string[] = [];
-    let newline = pending.indexOf("\n");
+    let newline = pendingLine.indexOf("\n");
     while (newline >= 0) {
-      lines.push(pending.slice(0, newline).replace(/\r$/, ""));
-      pending = pending.slice(newline + 1);
-      newline = pending.indexOf("\n");
+      lines.push(pendingLine.slice(0, newline).replace(/\r$/, ""));
+      pendingLine = pendingLine.slice(newline + 1);
+      newline = pendingLine.indexOf("\n");
     }
-    while (pending.length > 8_192) {
-      lines.push(pending.slice(0, 8_192));
-      pending = pending.slice(8_192);
+    while (pendingLine.length > 8_192) {
+      lines.push(pendingLine.slice(0, 8_192));
+      pendingLine = pendingLine.slice(8_192);
     }
-    if (full && pending) {
-      lines.push(pending);
-      pending = "";
+    if (includePartialLine && pendingLine) {
+      lines.push(pendingLine);
+      pendingLine = "";
     }
     return Effect.forEach(lines, write, { discard: true });
   }
   return {
     data: (chunk: string): Effect.Effect<void, E, R> => {
-      pending += chunk;
-      return flush(false);
+      pendingLine += chunk;
+      return flushLines(false);
     },
-    end: (): Effect.Effect<void, E, R> => flush(true),
+    end: (): Effect.Effect<void, E, R> => flushLines(true),
   };
 }
