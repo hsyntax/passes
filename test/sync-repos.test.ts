@@ -4,11 +4,12 @@ import {
   copyFileSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { cleanup, timeout, workspace } from "./helpers.ts";
+import { cleanup, events, expectFixtureStopped, timeout, waitFor, workspace } from "./helpers.ts";
 
 afterEach(cleanup);
 
@@ -69,6 +70,9 @@ function syncWorkspace(annotated: boolean) {
   const script = join(ws.root, "scripts/sync-repos.ts");
   mkdirSync(dirname(script));
   copyFileSync(join(import.meta.dir, "../scripts/sync-repos.ts"), script);
+  // The copied entrypoint resolves the same application modules and installed services.
+  symlinkSync(join(import.meta.dir, "../src"), join(ws.root, "src"));
+  symlinkSync(join(import.meta.dir, "../node_modules"), join(ws.root, "node_modules"));
   writeFileSync(
     join(ws.root, "bun.lock"),
     JSON.stringify({
@@ -76,12 +80,15 @@ function syncWorkspace(annotated: boolean) {
     }),
   );
   const wrapper = join(ws.root, "bin/git");
-  // Redirect the network boundary to a local bare remote, retaining real fetch
-  // and tag replacement. Only the checkout-failure test injects a no-op command.
+  // Keep clone/fetch local with real Git. Cleanup and failure cases substitute
+  // a process fixture; checkout-mismatch cases inject a successful no-op.
   writeFileSync(
     wrapper,
     `#!/bin/sh
-if [ "$1" = fetch ]; then
+if [ "$1" = fetch ] && [ -n "$PASSES_TEST_GIT_MODE" ]; then
+  exec ${shellQuote(process.execPath)} ${shellQuote(join(import.meta.dir, "fixtures/git.ts"))}
+fi
+if [ "$1" = fetch ] || [ "$1" = clone ]; then
   exec ${shellQuote(gitExecutable!)} -c ${shellQuote(`url.${remote}.insteadOf=https://github.com/Effect-TS/effect.git`)} "$@"
 fi
 if [ "$1" = checkout ] && [ "$PASSES_TEST_SKIP_CHECKOUT" = 1 ]; then exit 0; fi
@@ -90,7 +97,7 @@ exec ${shellQuote(gitExecutable!)} "$@"
   );
   chmodSync(wrapper, 0o755);
 
-  async function sync() {
+  function launch() {
     const child = Bun.spawn([process.execPath, script], {
       cwd: ws.root,
       env: ws.env,
@@ -98,14 +105,15 @@ exec ${shellQuote(gitExecutable!)} "$@"
       stdout: "pipe",
       stderr: "pipe",
     });
-    const [code, stdout, stderr] = await Promise.all([
+    const result = Promise.all([
       child.exited,
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
-    ]);
-    return { code, stdout, stderr };
+    ]).then(([code, stdout, stderr]) => ({ code, stdout, stderr }));
+    return { child, result };
   }
-  return { ws, destination, remote, git, upstream, gitAt, release, tag, sync };
+  const sync = () => launch().result;
+  return { ws, destination, remote, git, upstream, gitAt, release, tag, sync, launch };
 }
 
 describe("repository sync revision checks", () => {
@@ -174,6 +182,107 @@ describe("repository sync revision checks", () => {
       expect(git("rev-parse", "HEAD")).toBe(nextRelease);
       expect(readFileSync(join(destination, "release.txt"), "utf8")).toBe("updated release\n");
       expect(result.stdout).toContain(`(${nextRelease.slice(0, 12)})`);
+    },
+    timeout,
+  );
+});
+
+describe("repository sync Effect boundaries", () => {
+  test(
+    "clones and verifies a missing checkout",
+    async () => {
+      const { destination, git, release, tag, sync } = syncWorkspace(true);
+      rmSync(destination, { recursive: true });
+      const result = await sync();
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toContain("Cloning effect@4.0.1");
+      expect(result.stdout).toContain(`Ready: repos/effect ${tag}`);
+      expect(git("rev-parse", "HEAD")).toBe(release);
+    },
+    timeout,
+  );
+
+  test(
+    "rejects dirty checkouts before fetching",
+    async () => {
+      const { destination, sync } = syncWorkspace(false);
+      writeFileSync(join(destination, "release.txt"), "local edit\n");
+      const result = await sync();
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("has local changes");
+      expect(readFileSync(join(destination, "release.txt"), "utf8")).toBe("local edit\n");
+    },
+    timeout,
+  );
+
+  test(
+    "rejects malformed manifests as a repository failure",
+    async () => {
+      const { ws, destination, git, sync } = syncWorkspace(false);
+      writeFileSync(join(destination, "packages/effect/package.json"), "null");
+      git("add", ".");
+      git("commit", "--quiet", "-m", "Invalid manifest");
+      // Keep this checkout for the manifest check, as in the revision-mismatch case.
+      ws.env.PASSES_TEST_SKIP_CHECKOUT = "1";
+      const result = await sync();
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("Tag effect@4.0.1 contains undefined@undefined");
+      expect(result.stdout).not.toContain("Ready:");
+    },
+    timeout,
+  );
+
+  test.each(["SIGINT", "SIGTERM"] as const)(
+    "%s interrupts Git and cleans up its group",
+    async (signal) => {
+      const { ws, launch } = syncWorkspace(false);
+      ws.env.PASSES_TEST_GIT_MODE = "hold";
+      const running = launch();
+      try {
+        await waitFor(
+          () => events(ws).some((event) => event.kind === "git-started"),
+          "Git fixture to start",
+        );
+        running.child.kill(signal);
+        const result = await running.result;
+        expect(result.code).toBe(130);
+        expect(result.stdout).not.toContain("Ready:");
+        expect(result.stderr).not.toContain("repository sync(s) failed");
+        await expectFixtureStopped(ws);
+      } finally {
+        if (running.child.exitCode === null) running.child.kill("SIGKILL");
+        await running.result;
+      }
+    },
+    timeout,
+  );
+
+  test(
+    "retains Git failure diagnostics and releases descendants",
+    async () => {
+      const { ws, sync } = syncWorkspace(false);
+      ws.env.PASSES_TEST_GIT_MODE = "fail";
+      const result = await sync();
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("1 repository sync(s) failed:");
+      expect(result.stderr).toContain("Command failed: git fetch");
+      expect(result.stderr).toContain("fixture Git failure");
+      expect(result.stdout).not.toContain("Ready:");
+      await expectFixtureStopped(ws);
+    },
+    timeout,
+  );
+
+  test.each(["stdout", "stderr"])(
+    "bounds %s and releases descendants on overflow",
+    async (channel) => {
+      const { ws, sync } = syncWorkspace(false);
+      ws.env.PASSES_TEST_GIT_MODE = channel;
+      const result = await sync();
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(`${channel} maxBuffer length exceeded`);
+      expect(result.stdout).not.toContain("Ready:");
+      await expectFixtureStopped(ws);
     },
     timeout,
   );

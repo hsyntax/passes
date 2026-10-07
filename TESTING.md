@@ -398,3 +398,34 @@ Checks run on macOS with Bun 1.4.2: baseline `bun test` (149 passing), focused
 `bun test test/sync-repos.test.ts` (five passing), the three before/after probes
 above, and `bun run check` (typecheck, lint, formatting, 149 passing tests, and
 build). Final documentation formatting and `git diff --check` also passed.
+
+## Repository-sync Effect execution
+
+Reviewed the pinned Effect 4.0.1 filesystem, process spawner, stream, result,
+and Bun runtime implementations. The application runner's adopted integrations
+remain; repository maintenance now uses the same `BunServices.layer`,
+`startProcess`, and `waitForExit` functions. The existing `runCommand` timeout and
+output tails are unsuitable for cloning, so sync collects full Git output up to
+the prior 1 MiB per-stream bound without adding a command timeout.
+
+Before → After: synchronous filesystem calls, promisified `execFile`, and
+`Promise.allSettled` orchestration → platform filesystem effects, scoped Git
+processes, and concurrent `Effect.result` collection. Git failures retain stderr,
+exit code, command, and output in their cause; aggregated failures retain their
+individual causes. JSONC and JSON parsing each have a single `Effect.try`
+boundary. Byte reads retain Node UTF-8/BOM behavior. The filesystem service wires
+abort to native reads; the spawner performs actual process-group termination and
+500 ms escalation. `BunRuntime.runMain` is the script's sole runtime entrypoint
+and uses its standard interruption status, 130, for either signal. Script files
+are now included in the normal TypeScript check.
+
+The 13 local sync tests cover lightweight/annotated and moved tags, mismatched
+HEAD, missing revisions, fresh clones, dirty checkouts, invalid manifests, Git
+failure diagnostics, both output bounds, and SIGINT/SIGTERM. Cleanup cases require
+both the Git fixture and its TERM-ignoring descendant to stop. Clone/fetch use a
+local bare remote; no network or live model calls were made.
+
+Checks run on macOS with Bun 1.4.2: `bun run typecheck`,
+`bun test test/sync-repos.test.ts` (13 passing), and `bun run check` (typecheck,
+lint, formatting, 157 passing tests, and build). Final documentation formatting
+and `git diff --check` also passed.

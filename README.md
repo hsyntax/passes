@@ -281,7 +281,12 @@ Runtime dependencies are Effect v4, `@effect/platform-bun`, `gray-matter`, and `
 The CLI provides `BunServices.layer` for platform services. Its filesystem,
 process, path, and stdio implementations reuse `@effect/platform-node-shared`.
 All three Effect packages resolve to 4.0.1; `bun run repos:sync` verifies their
-manifests against the vendored release tree.
+manifests against the vendored release tree. Repository sync also runs in Effect,
+reusing the filesystem services and scoped process spawner. Git commands retain
+full output up to the previous 1 MiB per-stream bound; interruption or output
+failure releases the process group with the same 500 ms escalation deadline.
+Its application entrypoint uses `BunRuntime.runMain`; JSONC and JSON parsing each
+have a single synchronous exception boundary.
 
 Discovery keeps Node's directory entries to ignore symlinks without extra file
 checks. Its single-operation adapter preserves native errors; `readdir` has no

@@ -1,8 +1,9 @@
-import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { BunRuntime, BunServices } from "@effect/platform-bun";
+import { Console, Effect, FileSystem, Result, Stream } from "effect";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
+import { message } from "../src/errors.ts";
+import { startProcess, waitForExit } from "../src/process.ts";
 
 type RepositoryPackage = {
   readonly packageDirectory: string;
@@ -45,24 +46,58 @@ const repositories: ReadonlyArray<Repository> = [
 const projectDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const reposDirectory = resolve(projectDirectory, "repos");
 const lockfilePath = resolve(projectDirectory, "bun.lock");
-const execFileAsync = promisify(execFile);
+// Match execFile's per-stream buffer bound without truncating successful Git output.
+const MAX_OUTPUT_BYTES = 1024 * 1024;
+const collectGitOutput = <E, R>(stream: Stream.Stream<Uint8Array, E, R>, channel: string) =>
+  stream.pipe(
+    Stream.runFoldEffect(
+      () => ({ bytes: 0, chunks: [] as Uint8Array[] }),
+      (output, chunk) => {
+        output.bytes += chunk.byteLength;
+        if (output.bytes > MAX_OUTPUT_BYTES)
+          return Effect.fail(new Error(`${channel} maxBuffer length exceeded`));
+        output.chunks.push(chunk);
+        return Effect.succeed(output);
+      },
+    ),
+    Effect.map(({ chunks }) => Buffer.concat(chunks).toString("utf8")),
+  );
 
-async function runGit(directory: string, ...args: ReadonlyArray<string>): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, {
-    cwd: directory,
-    encoding: "utf8",
-  });
-  return stdout.trim();
-}
+const runGit = Effect.fn("Repos.runGit")((directory: string, ...args: ReadonlyArray<string>) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      // Reuse the adopted spawner: interruption releases the process group and
+      // escalates to SIGKILL. A fetch/clone has no arbitrary command deadline.
+      const proc = yield* startProcess("git", args, directory);
+      const [code, stdout, stderr] = yield* Effect.all(
+        [
+          waitForExit(proc),
+          collectGitOutput(proc.stdout, "stdout"),
+          collectGitOutput(proc.stderr, "stderr"),
+        ],
+        { concurrency: "unbounded" },
+      );
+      if (code !== 0)
+        return yield* Effect.fail(
+          new Error(`Command failed: git ${args.join(" ")}\n${stderr}`, {
+            cause: { code, stdout, stderr, command: ["git", ...args] },
+          }),
+        );
+      return stdout.trim();
+    }),
+  ),
+);
 
-function readResolvedDependencyVersion(
+const readResolvedDependencyVersion = Effect.fn(function* (
   lockfile: Lockfile,
   repositoryPackage: RepositoryPackage,
-): string {
-  const resolution = lockfile.packages?.[repositoryPackage.packageName]?.[0];
+) {
+  const resolution = lockfile?.packages?.[repositoryPackage.packageName]?.[0];
   if (typeof resolution !== "string") {
-    throw new Error(
-      `Could not find a resolved version for ${repositoryPackage.packageName} in bun.lock`,
+    return yield* Effect.fail(
+      new Error(
+        `Could not find a resolved version for ${repositoryPackage.packageName} in bun.lock`,
+      ),
     );
   }
 
@@ -73,13 +108,13 @@ function readResolvedDependencyVersion(
     !resolution.startsWith(prefix) ||
     !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)
   ) {
-    throw new Error(
-      `Unsupported resolved version for ${repositoryPackage.packageName}: ${resolution}`,
+    return yield* Effect.fail(
+      new Error(`Unsupported resolved version for ${repositoryPackage.packageName}: ${resolution}`),
     );
   }
 
   return version;
-}
+});
 
 function normalizeRemote(remote: string): string {
   return remote
@@ -91,53 +126,58 @@ function normalizeRemote(remote: string): string {
 
 // Packages in one repository can have different versions. The first package
 // selects the tag; each package must match its own resolved version.
-async function syncRepository(
+const syncRepository = Effect.fn("Repos.syncRepository")(function* (
   repository: Repository,
   resolvedPackageVersions: ReadonlyArray<string>,
-): Promise<void> {
+) {
+  const fs = yield* FileSystem.FileSystem;
   const destination = resolve(reposDirectory, repository.directory);
   const releasePackage = repository.packages[0];
   const version = resolvedPackageVersions[0];
-  if (version === undefined) throw new Error(`Missing version for ${releasePackage.packageName}`);
+  if (version === undefined)
+    return yield* Effect.fail(new Error(`Missing version for ${releasePackage.packageName}`));
   const tag = repository.tag(version);
 
-  if (!existsSync(destination)) {
-    console.log(
+  if (!(yield* fs.exists(destination))) {
+    yield* Console.log(
       `Cloning ${releasePackage.packageName}@${version} into repos/${repository.directory}`,
     );
-    await execFileAsync(
-      "git",
-      [
-        "clone",
-        "--depth=1",
-        "--filter=blob:none",
-        "--branch",
-        tag,
-        repository.repository,
-        destination,
-      ],
-      { cwd: projectDirectory },
+    yield* runGit(
+      projectDirectory,
+      "clone",
+      "--depth=1",
+      "--filter=blob:none",
+      "--branch",
+      tag,
+      repository.repository,
+      destination,
     );
   } else {
-    if (!existsSync(resolve(destination, ".git"))) {
-      throw new Error(`repos/${repository.directory} exists but is not a Git repository`);
+    if (!(yield* fs.exists(resolve(destination, ".git")))) {
+      return yield* Effect.fail(
+        new Error(`repos/${repository.directory} exists but is not a Git repository`),
+      );
     }
 
-    const remote = await runGit(destination, "remote", "get-url", "origin");
+    const remote = yield* runGit(destination, "remote", "get-url", "origin");
     if (normalizeRemote(remote) !== normalizeRemote(repository.repository)) {
-      throw new Error(
-        `repos/${repository.directory} has unexpected origin ${remote}; expected ${repository.repository}`,
+      return yield* Effect.fail(
+        new Error(
+          `repos/${repository.directory} has unexpected origin ${remote}; expected ${repository.repository}`,
+        ),
       );
     }
 
-    const status = await runGit(destination, "status", "--porcelain");
+    const status = yield* runGit(destination, "status", "--porcelain");
     if (status !== "") {
-      throw new Error(
-        `repos/${repository.directory} has local changes; preserve or discard them before syncing`,
+      return yield* Effect.fail(
+        new Error(
+          `repos/${repository.directory} has local changes; preserve or discard them before syncing`,
+        ),
       );
     }
 
-    await runGit(
+    yield* runGit(
       destination,
       "fetch",
       "--depth=1",
@@ -145,7 +185,7 @@ async function syncRepository(
       "origin",
       `refs/tags/${tag}:refs/tags/${tag}`,
     );
-    await runGit(destination, "checkout", "--detach", tag);
+    yield* runGit(destination, "checkout", "--detach", tag);
   }
 
   for (const [index, repositoryPackage] of repository.packages.entries()) {
@@ -155,67 +195,88 @@ async function syncRepository(
       repositoryPackage.packageDirectory,
       "package.json",
     );
-    if (!existsSync(packageJsonPath)) {
-      throw new Error(
-        `${repositoryPackage.packageName} package metadata is missing at ${packageJsonPath}`,
+    if (!(yield* fs.exists(packageJsonPath))) {
+      return yield* Effect.fail(
+        new Error(
+          `${repositoryPackage.packageName} package metadata is missing at ${packageJsonPath}`,
+        ),
       );
     }
 
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
-      readonly name?: unknown;
-      readonly version?: unknown;
-    };
+    const source = yield* fs
+      .readFile(packageJsonPath)
+      .pipe(Effect.map((bytes) => Buffer.from(bytes).toString("utf8")));
+    const packageJson = yield* Effect.try({
+      try: () =>
+        JSON.parse(source) as { readonly name?: unknown; readonly version?: unknown } | null,
+      catch: (error) => error,
+    });
     if (
-      packageJson.name !== repositoryPackage.packageName ||
-      packageJson.version !== expectedVersion
+      packageJson?.name !== repositoryPackage.packageName ||
+      packageJson?.version !== expectedVersion
     ) {
-      throw new Error(
-        `Tag ${tag} contains ${String(packageJson.name)}@${String(packageJson.version)}, expected ${repositoryPackage.packageName}@${expectedVersion}`,
+      return yield* Effect.fail(
+        new Error(
+          `Tag ${tag} contains ${String(packageJson?.name)}@${String(packageJson?.version)}, expected ${repositoryPackage.packageName}@${expectedVersion}`,
+        ),
       );
     }
   }
 
   // Resolve this fixed pair in argument order, peeling annotated tags to their commit.
-  const commits = (await runGit(destination, "rev-parse", `${tag}^{commit}`, "HEAD")).split("\n");
+  const commits = yield* runGit(destination, "rev-parse", `${tag}^{commit}`, "HEAD").pipe(
+    Effect.map((output) => output.split("\n")),
+  );
   const [releaseCommit, checkoutCommit] = commits;
   if (commits.length !== 2 || !checkoutCommit || checkoutCommit !== releaseCommit) {
-    throw new Error(`repos/${repository.directory} did not check out ${tag}`);
+    return yield* Effect.fail(new Error(`repos/${repository.directory} did not check out ${tag}`));
   }
 
-  console.log(`Ready: repos/${repository.directory} ${tag} (${checkoutCommit.slice(0, 12)})`);
-}
+  yield* Console.log(
+    `Ready: repos/${repository.directory} ${tag} (${checkoutCommit.slice(0, 12)})`,
+  );
+});
 
-async function main(): Promise<void> {
-  const lockfile = Bun.JSONC.parse(readFileSync(lockfilePath, "utf8")) as Lockfile;
-  const targets = repositories.map((repository) => ({
-    repository,
-    resolvedPackageVersions: repository.packages.map((repositoryPackage) =>
+const main = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const source = yield* fs
+    .readFile(lockfilePath)
+    .pipe(Effect.map((bytes) => Buffer.from(bytes).toString("utf8")));
+  const lockfile = yield* Effect.try({
+    try: () => Bun.JSONC.parse(source) as Lockfile,
+    catch: (error) => error,
+  });
+  const targets = yield* Effect.forEach(repositories, (repository) =>
+    Effect.forEach(repository.packages, (repositoryPackage) =>
       readResolvedDependencyVersion(lockfile, repositoryPackage),
-    ),
-  }));
-  mkdirSync(reposDirectory, { recursive: true });
-  const results = await Promise.allSettled(
-    targets.map(({ repository, resolvedPackageVersions }) =>
-      syncRepository(repository, resolvedPackageVersions),
-    ),
+    ).pipe(Effect.map((resolvedPackageVersions) => ({ repository, resolvedPackageVersions }))),
+  );
+  yield* fs.makeDirectory(reposDirectory, { recursive: true });
+  const results = yield* Effect.forEach(
+    targets,
+    ({ repository, resolvedPackageVersions }) =>
+      Effect.result(syncRepository(repository, resolvedPackageVersions)),
+    { concurrency: "unbounded" },
   );
   const failures = results.flatMap((result, index) =>
-    result.status === "rejected"
+    Result.isFailure(result)
       ? [
-          `${targets[index]?.repository.packages[0].packageName ?? "unknown repository"}: ${
-            result.reason instanceof Error ? result.reason.message : String(result.reason)
-          }`,
+          `${targets[index]?.repository.packages[0].packageName ?? "unknown repository"}: ${message(result.failure)}`,
         ]
       : [],
   );
-
-  if (failures.length > 0) {
-    throw new Error(`${failures.length} repository sync(s) failed:\n${failures.join("\n")}`);
-  }
-}
-
-main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(`repos:sync failed: ${message}`);
-  process.exitCode = 1;
+  if (failures.length > 0)
+    return yield* Effect.fail(
+      new Error(`${failures.length} repository sync(s) failed:\n${failures.join("\n")}`, {
+        cause: results.filter(Result.isFailure).map((result) => result.failure),
+      }),
+    );
 });
+
+BunRuntime.runMain(
+  main.pipe(
+    Effect.tapError((error) => Console.error(`repos:sync failed: ${message(error)}`)),
+    Effect.provide(BunServices.layer),
+  ),
+  { disableErrorReporting: true },
+);
