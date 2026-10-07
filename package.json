@@ -19,8 +19,9 @@
     "repos:sync": "bun scripts/sync-repos.ts"
   },
   "dependencies": {
-    "@effect/platform-node-shared": "4.0.1",
+    "@effect/platform-bun": "4.0.1",
     "effect": "4.0.1",
+    "gray-matter": "4.0.3",
     "yaml": "2.9.0"
   },
   "devDependencies": {

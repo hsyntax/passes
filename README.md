@@ -277,19 +277,42 @@ tools; validation, help, and version also run without Git or Codex. Tests make n
 inference requests, configure no real account, and do not modify a user's Git
 working tree. See `TESTING.md`.
 
-Runtime dependencies are Effect v4, `@effect/platform-node-shared`, and `yaml`.
-Stage reads and directory checks use Effect's filesystem service with the shared
-implementation that also backs `@effect/platform-bun/BunFileSystem`. Both Effect
-packages are pinned to 4.0.1. `bun run repos:sync` verifies both packages against
-the vendored release tree.
+Runtime dependencies are Effect v4, `@effect/platform-bun`, `gray-matter`, and `yaml`.
+The CLI provides `BunServices.layer` for platform services. Its filesystem,
+process, path, and stdio implementations reuse `@effect/platform-node-shared`.
+All three Effect packages resolve to 4.0.1; `bun run repos:sync` verifies their
+manifests against the vendored release tree. Repository sync also runs in Effect,
+reusing the filesystem services and scoped process spawner. Git commands retain
+full output up to the previous 1 MiB per-stream bound; interruption or output
+failure releases the process group with the same 500 ms escalation deadline.
+Its application entrypoint uses `BunRuntime.runMain`; JSONC and JSON parsing each
+have a single synchronous exception boundary.
+
+Reusable Effect functions use unnamed `Effect.fn` for diagnostic definition/call
+frames, with generator bodies passed directly when possible. Named `Effect.fn`
+operations retain spans for useful duration/failure telemetry. `Effect.gen` composes
+inline effects, including scoped bodies. `Effect.fnUntraced` would omit wrapper
+spans and diagnostic frames while preserving tracing inside the body; no current
+helper justifies that tradeoff. Pure functions stay ordinary functions. The line
+reporter's callbacks also stay ordinary functions because they consume buffered
+lines at call time; deferring that mutation would change which call owns the output.
 
 Discovery keeps Node's directory entries to ignore symlinks without extra file
-checks. Reads use `FileSystem.readFile` and Node UTF-8 decoding to preserve BOMs;
-the service owns read cancellation. The YAML dependency retains full core-schema
+checks. Its single-operation adapter preserves native errors; `readdir` has no
+abort option, so Effect interruption stops traversal without cancelling the
+pending native read. Reads use `FileSystem.readFile` and Node UTF-8 decoding to
+preserve BOMs; the service wires cancellation to the native read's abort signal.
+Stage, scope, and catalog validation use Effect schema decoders directly.
+`gray-matter` extracts frontmatter, with explicit checks requiring bare `---` fence
+lines and preserving the prompt body exactly. Its default YAML engine is bypassed
+so the `yaml` dependency continues to handle parsing and validation. YAML
+parsing/conversion and JSON parsing have individual exception boundaries, and
+contextual errors retain their causes. The YAML dependency retains full core-schema
 parsing, duplicate-key diagnostics, and alias/tag rejection. Effect's YAML parser
-supports a narrower grammar. Process execution uses Effect's spawner with bounded
-pipe draining and explicit scoped TERM-to-KILL cleanup for descendants, including
-after a nonzero leader exit. The project deliberately avoids
+supports a narrower grammar. Process execution uses Effect's scoped spawner with
+bounded pipe draining and a 500 ms TERM-to-KILL deadline for descendants, including
+after a nonzero leader exit. The platform owns cleanup without an extra runner
+finalizer. The project deliberately avoids
 worktree libraries, databases, external services, or a second workflow format.
 
 ## Codex references

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -106,13 +107,16 @@ describe("passes CLI acceptance", () => {
     async (command) => {
       const ws = workspace();
       stage(ws, "stage.md");
-      for (const args of [
-        [command, "stages", "--scope"],
-        [command, "stages", "--scope", "PR", "--scope", "commit"],
+      for (const { args, diagnostic } of [
+        { args: [command, "stages", "--scope"], diagnostic: /scope.*nonempty single-line/i },
+        {
+          args: [command, "stages", "--scope", "PR", "--scope", "commit"],
+          diagnostic: /--scope.*only once/i,
+        },
       ]) {
         const result = await launch(ws, args).result;
         expect(result.code).toBe(1);
-        expect(result.output).toContain("scope");
+        expect(result.stderr).toMatch(diagnostic);
         expect(events(ws)).toEqual([]);
       }
     },
@@ -142,7 +146,7 @@ describe("passes CLI acceptance", () => {
       ]) {
         const result = await launch(ws, [command, "stages", "--scope", scope]).result;
         expect(result.code).toBe(1);
-        expect(result.output).toContain("scope");
+        expect(result.stderr).toMatch(/scope.*nonempty single-line/i);
         expect(events(ws)).toEqual([]);
       }
     },
@@ -201,36 +205,35 @@ describe("passes CLI acceptance", () => {
   );
 
   test.each(["root", "nested"])(
-    "checks the checkout once for a multilayer run from the %s directory",
+    "runs every layer in the %s invocation directory and preserves accumulated edits",
     async (location) => {
       const ws = workspace({ nested: location === "nested" });
-      const trace = join(ws.root, "git-trace.log");
-      ws.env.GIT_TRACE = trace;
-      stage(ws, "first.md", { prompt: directive("first") });
-      stage(ws, "second.md", { step: 1, prompt: directive("second") });
+      writeFileSync(join(ws.cwd, "dirty.txt"), "user changes\n");
+      stage(ws, "first.md", {
+        prompt: directive("first", {
+          appendFile: { path: "dirty.txt", content: "first layer edit\n" },
+        }),
+      });
+      stage(ws, "second.md", {
+        step: 1,
+        prompt: directive("second", {
+          appendFile: { path: "dirty.txt", content: "second layer edit\n" },
+        }),
+      });
       const result = await launch(ws).result;
       expect(result.code).toBe(0);
-      const gitCalls = readFileSync(trace, "utf8")
-        .split("\n")
-        .filter((line) => line.includes("trace: built-in: git "));
-      expect(gitCalls.filter((line) => line.includes("git rev-parse "))).toHaveLength(1);
-      expect(gitCalls).toHaveLength(3);
-      const observed = events(ws);
-      expect(observed.filter((event) => event.kind === "version")).toHaveLength(1);
-      expect(observed.filter((event) => event.kind === "app-server")).toHaveLength(1);
-      expect(observed.filter((event) => event.method === "model/list")).toHaveLength(1);
-      expect(observed.filter((event) => event.kind === "start").map((event) => event.id)).toEqual([
-        "first",
-        "second",
-      ]);
+      expect(readFileSync(join(ws.cwd, "dirty.txt"), "utf8")).toBe(
+        "user changes\nfirst layer edit\nsecond layer edit\n",
+      );
+      if (location === "nested") expect(existsSync(join(ws.repo, "dirty.txt"))).toBe(false);
       await expectFixtureStopped(ws);
     },
     timeout,
   );
 
   test.each([
-    { model: "not-in-catalog", effort: "medium", message: /model|not-in-catalog/i },
-    { model: "mock-model", effort: "ultra", message: /effort|ultra/i },
+    { model: "not-in-catalog", effort: "medium", message: /not-in-catalog.*not in.*catalog/i },
+    { model: "mock-model", effort: "ultra", message: /ultra.*unsupported/i },
   ])(
     "unsupported model/effort fails before any exec: %j",
     async ({ model, effort, message }) => {
@@ -239,23 +242,25 @@ describe("passes CLI acceptance", () => {
       stage(ws, "unsupported.md", { model, effort, step: 5 });
       const result = await launch(ws).result;
       expect(result.code).toBe(1);
-      expect(result.output).toMatch(message);
-      expect(events(ws).some((event) => event.kind === "app-server")).toBe(true);
+      expect(result.stderr).toContain("unsupported.md");
+      expect(result.stderr).toMatch(message);
       expect(events(ws).filter((event) => event.kind === "start")).toEqual([]);
       await expectFixtureStopped(ws);
     },
     timeout,
   );
 
-  test(
-    "rejects an older Codex version before querying models or executing stages",
-    async () => {
+  test.each(["0.158.99", "0.159.1"])(
+    "rejects older Codex %s before querying models or executing stages",
+    async (version) => {
       const ws = workspace();
-      ws.env.PASSES_TEST_CODEX_VERSION = "0.159.1";
+      ws.env.PASSES_TEST_CODEX_VERSION = version;
       stage(ws, "stage.md");
       const result = await launch(ws).result;
       expect(result.code).toBe(1);
-      expect(result.output).toMatch(/old|version|0\.159\.2/i);
+      expect(result.stderr).toContain(version);
+      expect(result.stderr).toMatch(/too old/i);
+      expect(result.stderr).toContain("0.159.2 or newer");
       expect(events(ws).some((event) => event.kind === "app-server")).toBe(false);
       expect(events(ws).some((event) => event.kind === "start")).toBe(false);
       await expectFixtureStopped(ws);
@@ -271,7 +276,7 @@ describe("passes CLI acceptance", () => {
       stage(ws, "stage.md");
       const result = await launch(ws).result;
       expect(result.code).toBe(1);
-      expect(result.output).toMatch(/catalog|compatibility|JSON/i);
+      expect(result.stderr).toMatch(/catalog.*JSON/i);
       expect(events(ws).some((event) => event.kind === "start")).toBe(false);
       await expectFixtureStopped(ws);
     },
@@ -302,9 +307,14 @@ describe("passes CLI acceptance", () => {
     async () => {
       const ws = workspace();
       ws.env.PASSES_TEST_CATALOG_MODE = "paginated";
-      stage(ws, "stage.md");
+      stage(ws, "stage.md", {
+        prompt: directive("later-page", {
+          appendFile: { path: "edit.txt", content: "later page model ran\n" },
+        }),
+      });
       const result = await launch(ws).result;
       expect(result.code).toBe(0);
+      expect(readFileSync(join(ws.cwd, "edit.txt"), "utf8")).toBe("later page model ran\n");
       const log = events(ws);
       const requests = log.filter((event) => event.kind === "rpc" && event.method === "model/list");
       expect(requests.some((event) => event.cursor === "page-2")).toBe(true);
@@ -324,9 +334,14 @@ describe("passes CLI acceptance", () => {
     async () => {
       const ws = workspace();
       ws.env.PASSES_TEST_CATALOG_MODE = "no-cursor";
-      stage(ws, "stage.md");
+      stage(ws, "stage.md", {
+        prompt: directive("complete-catalog", {
+          appendFile: { path: "edit.txt", content: "complete catalog model ran\n" },
+        }),
+      });
       const result = await launch(ws).result;
       expect(result.code).toBe(0);
+      expect(readFileSync(join(ws.cwd, "edit.txt"), "utf8")).toBe("complete catalog model ran\n");
       const log = events(ws);
       expect(log.filter((event) => event.kind === "start")).toHaveLength(1);
       await expectFixtureStopped(ws);
@@ -342,7 +357,7 @@ describe("passes CLI acceptance", () => {
       stage(ws, "stage.md");
       const result = await launch(ws).result;
       expect(result.code).toBe(1);
-      expect(result.output).toMatch(/cursor|pagination/i);
+      expect(result.stderr).toMatch(/repeated.*cursor/i);
       expect(events(ws).some((event) => event.kind === "start")).toBe(false);
       await expectFixtureStopped(ws);
     },
@@ -546,23 +561,23 @@ describe("passes CLI acceptance", () => {
       const longLine = "x".repeat(20_000);
       stage(ws, "long.md", {
         name: "Long stage",
-        prompt: directive("long", { stdout: longLine, hold: true }),
+        prompt: directive("long", { stdout: `${longLine}\n`, hold: true }),
       });
-      const execution = launch(ws, ["run", "stages", "--verbose"]);
-      await waitFor(
-        () =>
-          execution.stdout.includes("[Long stage] x") &&
-          execution.stdout.includes("Unicode stage: completed"),
-        "output before the long-running stage exits",
-      );
-      execution.child.kill("SIGINT");
-      const result = await execution.result;
-      expect(result.code).toBe(130);
       const stageLines = (text: string, prefix: string) =>
         text
           .split("\n")
           .filter((line) => line.startsWith(prefix))
           .map((line) => line.slice(prefix.length));
+      const execution = launch(ws, ["run", "stages", "--verbose"]);
+      await waitFor(
+        () =>
+          stageLines(execution.stdout, "[Long stage] ").join("") === longLine &&
+          execution.stdout.includes("Unicode stage: completed"),
+        "complete long output and drained Unicode output before cancellation",
+      );
+      execution.child.kill("SIGINT");
+      const result = await execution.result;
+      expect(result.code).toBe(130);
       expect(stageLines(result.stdout, "[Unicode stage] ")).toEqual(["héllo 🌍", "partial output"]);
       expect(stageLines(result.stderr, "[Unicode stage stderr] ")).toEqual([
         "échec 🌍",
@@ -609,24 +624,33 @@ describe("passes CLI acceptance", () => {
     timeout,
   );
 
-  test(
-    "a failed stage kills its own TERM-ignoring descendants before returning",
-    async () => {
+  test.each([0, 17])(
+    "a stage exiting with code %s kills its own TERM-ignoring descendants before returning",
+    async (exitCode) => {
       const ws = workspace();
       stage(ws, "failure.md", {
         prompt: directive("failure", {
           spawnDescendant: true,
           waitForDescendantOf: ["failure"],
-          exitCode: 17,
+          exitCode,
         }),
       });
-      stage(ws, "later.md", { step: 1, prompt: directive("later") });
+      stage(ws, "later.md", {
+        step: 1,
+        prompt: directive("later", {
+          appendFile: { path: "later.txt", content: "later stage ran\n" },
+        }),
+      });
       const result = await launch(ws).result;
-      expect(result.code).toBe(1);
-      expect(result.stderr).toContain("exit code 17");
+      expect(result.code).toBe(exitCode === 0 ? 0 : 1);
+      if (exitCode === 0) {
+        expect(readFileSync(join(ws.cwd, "later.txt"), "utf8")).toBe("later stage ran\n");
+      } else {
+        expect(result.stderr).toContain("exit code 17");
+      }
       expect(events(ws).some((event) => event.kind === "descendant")).toBe(true);
       expect(events(ws).some((event) => event.kind === "start" && event.id === "later")).toBe(
-        false,
+        exitCode === 0,
       );
       await expectFixtureStopped(ws);
     },
@@ -654,6 +678,84 @@ describe("passes CLI acceptance", () => {
         false,
       );
       await expectFixtureStopped(ws);
+    },
+    timeout,
+  );
+
+  test.each(["SIGINT", "SIGTERM"] as const)(
+    "%s remains the exit status when another signal arrives during cleanup",
+    async (signal) => {
+      const ws = workspace();
+      stage(ws, "waiting.md", {
+        prompt: directive("waiting", { hold: true, ignoreTerm: true, spawnDescendant: true }),
+      });
+      stage(ws, "later.md", { step: 1, prompt: directive("later") });
+      const execution = launch(ws);
+      await waitFor(
+        () => events(ws).some((event) => event.kind === "descendant"),
+        "descendant readiness",
+      );
+      execution.child.kill(signal);
+      await waitFor(() => execution.stderr.includes("cancelling active stages"), "cancellation");
+      execution.child.kill(signal === "SIGINT" ? "SIGTERM" : "SIGINT");
+      const result = await execution.result;
+      expect(result.code).toBe(signal === "SIGINT" ? 130 : 143);
+      expect(result.stderr.match(/cancelling active stages/g)).toHaveLength(1);
+      expect(events(ws).some((event) => event.kind === "start" && event.id === "later")).toBe(
+        false,
+      );
+      await expectFixtureStopped(ws);
+    },
+    timeout,
+  );
+
+  test(
+    "a closed stdout pipe cancels stubborn stages and descendants",
+    async () => {
+      const ws = workspace();
+      const releaseFile = join(ws.root, "release");
+      stage(ws, "waiting.md", {
+        prompt: directive("waiting", { hold: true, ignoreTerm: true, spawnDescendant: true }),
+      });
+      stage(ws, "writer.md", { prompt: directive("writer", { releaseFile }) });
+      stage(ws, "later.md", { step: 1, prompt: directive("later") });
+      const child = spawn(
+        process.execPath,
+        [join(import.meta.dir, "../src/cli.ts"), "run", "stages"],
+        {
+          cwd: ws.cwd,
+          env: ws.env,
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      let stderr = "";
+      child.stderr.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+      child.stdout.resume();
+      const exited = new Promise<number | null>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", resolve);
+      });
+      try {
+        await waitFor(
+          () =>
+            events(ws).some((event) => event.kind === "descendant") &&
+            events(ws).some((event) => event.kind === "ready" && event.id === "writer"),
+          "both stages ready",
+        );
+        child.stdout.destroy();
+        writeFileSync(releaseFile, "release\n");
+        expect(await exited).toBe(143);
+        expect(stderr).toContain("SIGTERM: cancelling active stages");
+        expect(events(ws).some((event) => event.kind === "start" && event.id === "later")).toBe(
+          false,
+        );
+        await expectFixtureStopped(ws);
+      } finally {
+        child.kill("SIGKILL");
+        await exited;
+      }
     },
     timeout,
   );

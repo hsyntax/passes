@@ -1,11 +1,8 @@
 #!/usr/bin/env bun
-import { Cause, Effect, Exit, Fiber } from "effect";
-import type * as FileSystemService from "effect/FileSystem";
-import type * as PathService from "effect/Path";
-import type * as StdioService from "effect/Stdio";
-import type { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
+import { BunServices } from "@effect/platform-bun";
+import { Cause, DateTime, Effect, Exit, Stdio } from "effect";
 import { message, PassesError } from "./errors.ts";
-import { runCommand, nodeProcessLayer } from "./process.ts";
+import { runCommand } from "./process.ts";
 import { createRunReporter, interruptNotice, terminal } from "./reporter.ts";
 import type { Reporter, RunReporter } from "./reporter.ts";
 import { runPlan } from "./runner.ts";
@@ -30,18 +27,13 @@ Concurrent stages share files. The runner does not create commits, worktrees, or
 Requires Bun >=1.3 and Codex CLI >=0.159.2; macOS/Linux for execution.
 `;
 let reporter: Reporter = terminal;
-let runLog: RunReporter | undefined;
-let loggingFailure: PassesError | undefined;
+let activeRunReporter: RunReporter | undefined;
+let runLogWriteFailure: PassesError | undefined;
 
-function main(
-  args: readonly string[],
-): Effect.Effect<
-  void,
-  PassesError,
-  ChildProcessSpawner | FileSystemService.FileSystem | PathService.Path | StdioService.Stdio
-> {
-  return Effect.scoped(
+const main = Effect.fn("Cli.main")(() =>
+  Effect.scoped(
     Effect.gen(function* () {
+      const args = yield* Stdio.Stdio.use(({ args }) => args);
       if (args.length === 1 && args[0] === "--help") {
         yield* reporter.out(HELP);
         return;
@@ -50,15 +42,16 @@ function main(
         yield* reporter.out("passes 0.1.0");
         return;
       }
-      const positional: string[] = [];
-      let scope: string | undefined;
+      const positionalArguments: string[] = [];
+      let scopeOverride: string | undefined;
       let verbose = false;
-      let fast = false;
+      let fastModeRequested = false;
       for (let index = 0; index < args.length; index += 1) {
-        const argument = args[index];
+        const argument = args[index]!;
         if (argument === "--fast") {
-          if (fast) return yield* Effect.fail(new PassesError("--fast may be supplied only once"));
-          fast = true;
+          if (fastModeRequested)
+            return yield* Effect.fail(new PassesError("--fast may be supplied only once"));
+          fastModeRequested = true;
           continue;
         }
         if (argument === "--verbose") {
@@ -68,21 +61,20 @@ function main(
           continue;
         }
         if (argument !== "--scope") {
-          if (argument !== undefined) positional.push(argument);
+          positionalArguments.push(argument);
           continue;
         }
-        if (scope !== undefined)
+        if (scopeOverride !== undefined)
           return yield* Effect.fail(new PassesError("--scope may be supplied only once"));
-        scope = yield* Effect.try({
-          try: () => parseScope(args[index + 1]),
-          catch: (error) => new PassesError(`--scope: ${message(error)}`),
-        });
+        scopeOverride = yield* parseScope(args[index + 1]).pipe(
+          Effect.mapError((cause) => new PassesError(`--scope: ${message(cause)}`, { cause })),
+        );
         index += 1;
       }
-      const [command, stagesDirectory] = positional;
+      const [cliCommand, stagesDirectory] = positionalArguments;
       if (
-        positional.length !== 2 ||
-        (command !== "run" && command !== "validate") ||
+        positionalArguments.length !== 2 ||
+        (cliCommand !== "run" && cliCommand !== "validate") ||
         !stagesDirectory ||
         stagesDirectory.startsWith("--")
       ) {
@@ -92,79 +84,87 @@ function main(
           ),
         );
       }
-      if (verbose && command !== "run")
+      if (verbose && cliCommand !== "run")
         return yield* Effect.fail(new PassesError("--verbose is only supported by run"));
-      if (fast && command !== "run")
+      if (fastModeRequested && cliCommand !== "run")
         return yield* Effect.fail(new PassesError("--fast is only supported by run"));
-      const invocationDirectory = process.cwd();
+      const invocationDirectory = yield* Effect.sync(() => process.cwd());
       const plan = yield* loadPlan(stagesDirectory, invocationDirectory);
-      if (command === "validate") {
+      if (cliCommand === "validate") {
         yield* reporter.out(renderPlanGraph(plan));
         return;
       }
       // This also rejects bare repositories and Git metadata directories, before Codex starts.
-      const repository = yield* runCommand(
+      const checkoutProbe = yield* runCommand(
         "git",
         ["rev-parse", "--show-toplevel"],
         plan.invocationDirectory,
       );
-      if (repository.code !== 0)
+      if (checkoutProbe.code !== 0)
         return yield* Effect.fail(
           new PassesError("Run passes from inside an existing Git checkout."),
         );
-      const log = yield* createRunReporter(repository.stdout.trim(), verbose, (error) => {
-        loggingFailure = error;
-        queueMicrotask(() => {
-          Effect.runFork(Fiber.interrupt(fiber));
-        });
-      }).pipe(
-        Effect.mapError((error) => new PassesError(`Could not create run log: ${message(error)}`)),
+      const runReporter = yield* createRunReporter(
+        checkoutProbe.stdout.trim(),
+        verbose,
+        (error) => {
+          runLogWriteFailure = error;
+          queueMicrotask(() => interrupt());
+        },
+      ).pipe(
+        Effect.mapError(
+          (cause) => new PassesError(`Could not create run log: ${message(cause)}`, { cause }),
+        ),
       );
-      runLog = log;
-      reporter = log.reporter;
-      yield* reporter.out(`Log: ${log.path}`);
-      yield* log.context(`Started: ${new Date().toISOString()}\n${renderPlanGraph(plan)}`);
-      yield* runPlan(plan, log.reporter, scope, fast).pipe(
-        Effect.mapError((error) => new PassesError(message(error))),
-      );
+      activeRunReporter = runReporter;
+      reporter = runReporter.reporter;
+      yield* reporter.out(`Log: ${runReporter.path}`);
+      const runStartedAt = yield* Effect.map(DateTime.now, DateTime.formatIso);
+      yield* runReporter.context(`Started: ${runStartedAt}\n${renderPlanGraph(plan)}`);
+      yield* runPlan(plan, runReporter.reporter, scopeOverride, fastModeRequested);
     }).pipe(
       Effect.onExit((exit) =>
         Effect.gen(function* () {
-          if (loggingFailure) {
+          if (runLogWriteFailure) {
             process.exitCode = 1;
-            yield* terminal.err(`passes: ${loggingFailure.message}`);
-          } else if (interrupted) process.exitCode = interrupted === "SIGINT" ? 130 : 143;
+            yield* terminal.err(`passes: ${runLogWriteFailure.message}`);
+          } else if (interruptionSignal)
+            process.exitCode = interruptionSignal === "SIGINT" ? 130 : 143;
           else if (Exit.isFailure(exit)) {
             process.exitCode = 1;
             yield* reporter.err(`passes: ${message(Cause.squash(exit.cause))}`);
           }
-          if (runLog) yield* runLog.finish(Boolean(process.exitCode));
+          if (activeRunReporter) yield* activeRunReporter.finish(Boolean(process.exitCode));
         }),
       ),
     ),
-  );
-}
+  ),
+);
 
-let interrupted: NodeJS.Signals | undefined;
-const fiber = Effect.runFork(main(process.argv.slice(2)).pipe(Effect.provide(nodeProcessLayer)));
-const stop = (signal: NodeJS.Signals) => {
-  if (interrupted) return;
-  interrupted = signal;
+let interruptionSignal: NodeJS.Signals | undefined;
+const cancelRun = (signal: NodeJS.Signals) => {
+  if (interruptionSignal) return;
+  interruptionSignal = signal;
   interruptNotice(`${signal}: cancelling active stages...`);
-  Effect.runFork(Fiber.interrupt(fiber));
+  interrupt();
 };
-const sigint = () => stop("SIGINT");
-const sigterm = () => stop("SIGTERM");
+const sigint = () => cancelRun("SIGINT");
+const sigterm = () => cancelRun("SIGTERM");
 process.on("SIGINT", sigint);
 process.on("SIGTERM", sigterm);
 // A closed stdout pipe should also cancel descendants, rather than orphaning them.
-const outputError = (error: NodeJS.ErrnoException) => {
-  if (error.code === "EPIPE") stop("SIGTERM");
+const handleOutputError = (error: NodeJS.ErrnoException) => {
+  if (error.code === "EPIPE") cancelRun("SIGTERM");
   else throw error;
 };
-process.stdout.on("error", outputError);
-process.stderr.on("error", outputError);
-const exit = await Effect.runPromise(Fiber.await(fiber));
-process.removeListener("SIGINT", sigint);
-process.removeListener("SIGTERM", sigterm);
-if (Exit.isFailure(exit) && process.exitCode === undefined) process.exitCode = 1;
+process.stdout.on("error", handleOutputError);
+process.stderr.on("error", handleOutputError);
+const interrupt = Effect.runCallback(main().pipe(Effect.provide(BunServices.layer)), {
+  onExit: (exit) => {
+    process.removeListener("SIGINT", sigint);
+    process.removeListener("SIGTERM", sigterm);
+    process.stdout.removeListener("error", handleOutputError);
+    process.stderr.removeListener("error", handleOutputError);
+    if (Exit.isFailure(exit) && process.exitCode === undefined) process.exitCode = 1;
+  },
+});

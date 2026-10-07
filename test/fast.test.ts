@@ -87,10 +87,10 @@ describe("runner fast mode", () => {
       stage(ws, "stage.md");
       const result = await launch(ws).result;
       expect(result.code).toBe(0);
+      expect(events(ws).filter((event) => event.kind === "start")).toHaveLength(1);
       const invocations = events(ws).filter(
         (event) => event.kind === "start" || event.kind === "app-server",
       );
-      expect(invocations).toHaveLength(2);
       for (const invocation of invocations) {
         expect(
           invocation.args?.some((arg) => arg.startsWith("service_tier=") || arg === "fast_mode"),

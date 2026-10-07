@@ -114,9 +114,7 @@ describe("run logging", () => {
       const diagnostics = (text: string) =>
         [...text.matchAll(/diagnostic \d+/g)].map(([line]) => line);
       const excerpt = diagnostics(result.stderr);
-      expect(excerpt.length).toBeGreaterThan(0);
-      expect(excerpt.length).toBeLessThanOrEqual(20);
-      expect(excerpt).toEqual(lines.slice(-excerpt.length));
+      expect(excerpt).toEqual(lines.slice(-20));
       const log = readFileSync(logPath(result.stdout), "utf8");
       expect(diagnostics(log)).toEqual(lines);
       expect(log).toContain("exit code 17");
@@ -224,7 +222,9 @@ describe("run logging", () => {
       stage(ws, "stage.md", { model: "missing-model" });
       const result = await launch(ws).result;
       expect(result.code).toBe(1);
-      expect(readFileSync(logPath(result.stdout), "utf8")).toContain("missing-model");
+      const diagnostic = /missing-model.*not in.*catalog/i;
+      expect(result.stderr).toMatch(diagnostic);
+      expect(readFileSync(logPath(result.stdout), "utf8")).toMatch(diagnostic);
       expect(result.stderr).not.toContain("Recent output:");
       expect(events(ws).some((event) => event.kind === "start")).toBe(false);
     },

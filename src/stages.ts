@@ -1,5 +1,6 @@
 import { readdir } from "node:fs/promises";
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Effect, FileSystem, Path, Result, Schema } from "effect";
+import matter from "gray-matter";
 import { parseDocument } from "yaml";
 import { message, PassesError } from "./errors.ts";
 
@@ -19,15 +20,17 @@ const StageFrontmatterSchema = Schema.Struct({
   scope: Schema.optionalKey(ScopeString),
 });
 
-export function parseScope(scope: unknown): string {
-  try {
-    return Schema.decodeUnknownSync(ScopeString)(scope);
-  } catch {
-    throw new PassesError(
-      "scope must be a nonempty single-line string without control or format characters",
-    );
-  }
-}
+export const parseScope = Effect.fn((scope: unknown) =>
+  Schema.decodeUnknownEffect(ScopeString)(scope).pipe(
+    Effect.mapError(
+      (cause) =>
+        new PassesError(
+          "scope must be a nonempty single-line string without control or format characters",
+          { cause },
+        ),
+    ),
+  ),
+);
 
 export interface Stage {
   readonly name: string;
@@ -39,18 +42,17 @@ export interface Stage {
   readonly prompt: string;
   readonly file: string;
 }
-export interface Layer {
+interface Layer {
   readonly step: number;
   readonly stages: readonly Stage[];
 }
 export interface Plan {
   readonly invocationDirectory: string;
-  readonly stagesDirectory: string;
   readonly stages: readonly Stage[];
   readonly layers: readonly Layer[];
 }
 
-export const stageSlug = (stageName: string): string =>
+const stageSlug = (stageName: string): string =>
   stageName
     .normalize("NFKD")
     .replace(/\p{M}/gu, "")
@@ -58,155 +60,177 @@ export const stageSlug = (stageName: string): string =>
     .replace(/[^\p{L}\p{N}]+/gu, "-")
     .replace(/^-|-$/g, "");
 
-export function parseStage(source: string, file: string): Stage {
-  const match = /^\uFEFF?---[\t ]*\r?\n([\s\S]*?)^---[\t ]*\r?$(?:\n|$)([\s\S]*)/m.exec(source);
-  // The multiline regexp allows the closing fence to anchor; enforce opening at byte zero.
-  if (!match || match.index !== 0) {
-    throw new PassesError(`${file}: frontmatter must start and end with a line containing ---`);
+const parseStage = Effect.fn(function* (source: string, file: string) {
+  const text = source.startsWith("\uFEFF") ? source.slice(1) : source;
+  // Require a bare YAML fence before gray-matter can select a language engine.
+  if (!/^---[\t ]*\r?\n/.test(text)) {
+    return yield* Effect.fail(
+      new PassesError(`${file}: frontmatter must start and end with a line containing ---`),
+    );
   }
-  const yaml = parseDocument(match[1] ?? "", { uniqueKeys: true, strict: true, schema: "core" });
+  const extracted = yield* Effect.try({
+    // Extract only; keep YAML parsing and conversion in their own error boundaries.
+    try: () => matter(text, { engines: { yaml: () => ({}) } }),
+    catch: (cause) => new PassesError(`${file}: frontmatter: ${message(cause)}`, { cause }),
+  });
+  // gray-matter permits missing closing fences and matches delimiter prefixes.
+  const closingOffset = 3 + extracted.matter.length;
+  const closingFence = /^\n---[\t ]*\r?(?:\n|$)/.exec(text.slice(closingOffset));
+  if (!closingFence) {
+    return yield* Effect.fail(
+      new PassesError(`${file}: frontmatter must start and end with a line containing ---`),
+    );
+  }
+  const yaml = yield* Effect.try({
+    try: () => parseDocument(extracted.matter, { uniqueKeys: true, strict: true, schema: "core" }),
+    catch: (cause) => new PassesError(`${file}: YAML: ${message(cause)}`, { cause }),
+  });
   if (yaml.errors.length || yaml.warnings.length) {
-    throw new PassesError(
-      `${file}: YAML: ${[...yaml.errors, ...yaml.warnings].map((e) => e.message).join("; ")}`,
+    return yield* Effect.fail(
+      new PassesError(
+        `${file}: YAML: ${[...yaml.errors, ...yaml.warnings].map((e) => e.message).join("; ")}`,
+        { cause: [...yaml.errors, ...yaml.warnings] },
+      ),
     );
   }
-  let frontmatter: unknown;
-  try {
-    frontmatter = yaml.toJS({ maxAliasCount: 0 });
-  } catch (error) {
-    throw new PassesError(`${file}: YAML: ${message(error)} (aliases are not supported)`);
-  }
-  if (frontmatter && typeof frontmatter === "object" && !Array.isArray(frontmatter)) {
-    frontmatter = Object.fromEntries(
-      Object.entries(frontmatter).map(([key, value]) => [
-        key,
-        typeof value === "string" && key !== "scope" ? value.trim() : value,
-      ]),
-    );
-  }
-  let stageFrontmatter: typeof StageFrontmatterSchema.Type;
-  try {
-    stageFrontmatter = Schema.decodeUnknownSync(StageFrontmatterSchema, {
-      onExcessProperty: "error",
-      errors: "all",
-    })(frontmatter);
-  } catch (error) {
-    throw new PassesError(`${file}: frontmatter: ${message(error)}`);
-  }
-  if (!Number.isSafeInteger(stageFrontmatter.step)) {
-    throw new PassesError(`${file}: step must be a nonnegative safe integer`);
-  }
-  const prompt = match[2] ?? "";
-  if (!prompt.trim()) throw new PassesError(`${file}: prompt body must not be empty`);
+  const frontmatter: unknown = yield* Effect.try({
+    try: () => yaml.toJS({ maxAliasCount: 0 }),
+    catch: (cause) =>
+      new PassesError(`${file}: YAML: ${message(cause)} (aliases are not supported)`, { cause }),
+  }).pipe(
+    Effect.map((frontmatter) =>
+      frontmatter && typeof frontmatter === "object" && !Array.isArray(frontmatter)
+        ? Object.fromEntries(
+            Object.entries(frontmatter).map(([key, value]) => [
+              key,
+              typeof value === "string" && key !== "scope" ? value.trim() : value,
+            ]),
+          )
+        : frontmatter,
+    ),
+  );
+  const stageFrontmatter = yield* Schema.decodeUnknownEffect(StageFrontmatterSchema, {
+    onExcessProperty: "error",
+    errors: "all",
+  })(frontmatter).pipe(
+    Effect.mapError(
+      (cause) => new PassesError(`${file}: frontmatter: ${message(cause)}`, { cause }),
+    ),
+  );
+  const prompt = text.slice(closingOffset + closingFence[0].length);
+  if (!prompt.trim())
+    return yield* Effect.fail(new PassesError(`${file}: prompt body must not be empty`));
   if (prompt.includes("\0"))
-    throw new PassesError(`${file}: prompt body must not contain NUL bytes`);
+    return yield* Effect.fail(new PassesError(`${file}: prompt body must not contain NUL bytes`));
   const slug = stageSlug(stageFrontmatter.name);
-  if (!slug) throw new PassesError(`${file}: name must contain at least one letter or number`);
-  return { ...stageFrontmatter, slug, prompt, file };
-}
-
-const discoverStageFiles = Effect.fn((stagesDirectory: string) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const directory = yield* fs
-      .stat(stagesDirectory)
-      .pipe(Effect.mapError((error) => error.cause ?? error));
-    if (directory.type !== "Directory")
-      return yield* Effect.fail(new PassesError(`${stagesDirectory}: expected a stages directory`));
-    const stageFiles: string[] = [];
-    const walk: (dir: string) => Effect.Effect<void, unknown, never> = Effect.fn((dir: string) =>
-      Effect.gen(function* () {
-        // Dirent flags let this walk skip symlinks; FileSystem.readDirectory returns names only.
-        const entries = yield* Effect.tryPromise({
-          try: () => readdir(dir, { withFileTypes: true }),
-          catch: (error) => error,
-        });
-        entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-        for (const entry of entries) {
-          const entryPath = path.join(dir, entry.name);
-          // Never follow links, including links that could leave the supplied stage tree.
-          if (entry.isDirectory()) yield* walk(entryPath);
-          else if (entry.isFile() && /\.md$/i.test(entry.name)) stageFiles.push(entryPath);
-        }
-      }),
+  if (!slug)
+    return yield* Effect.fail(
+      new PassesError(`${file}: name must contain at least one letter or number`),
     );
-    yield* walk(stagesDirectory);
-    return stageFiles;
-  }),
-);
+  return { ...stageFrontmatter, slug, prompt, file };
+});
+
+const discoverStageFiles = Effect.fn(function* (stagesDirectory: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const stagesDirectoryInfo = yield* fs
+    .stat(stagesDirectory)
+    .pipe(Effect.mapError((error) => error.cause ?? error));
+  if (stagesDirectoryInfo.type !== "Directory")
+    return yield* Effect.fail(new PassesError(`${stagesDirectory}: expected a stages directory`));
+  const stageFiles: string[] = [];
+  const visitStageDirectory: (directory: string) => Effect.Effect<void, unknown, never> = Effect.fn(
+    function* (directory: string) {
+      // The platform API returns names only; Dirent flags preserve the no-symlink walk.
+      // readdir has no abort option: interruption stops the fiber, not the native read.
+      const entries = yield* Effect.tryPromise({
+        try: () => readdir(directory, { withFileTypes: true }),
+        catch: (error) => error,
+      });
+      entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      for (const entry of entries) {
+        const entryPath = path.join(directory, entry.name);
+        // Never follow links, including links that could leave the supplied stage tree.
+        if (entry.isDirectory()) yield* visitStageDirectory(entryPath);
+        else if (entry.isFile() && /\.md$/i.test(entry.name)) stageFiles.push(entryPath);
+      }
+    },
+  );
+  yield* visitStageDirectory(stagesDirectory);
+  return stageFiles;
+});
 
 export const loadPlan = Effect.fn("Stages.loadPlan")(
-  (stagesDirectory: string, invocationDirectory: string) =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const absoluteStagesDirectory = path.resolve(invocationDirectory, stagesDirectory);
-      const stageFiles = yield* discoverStageFiles(absoluteStagesDirectory);
-      if (!stageFiles.length)
-        return yield* Effect.fail(
-          new PassesError(`${stagesDirectory}: no Markdown (.md) stages found`),
+  function* (stagesDirectory: string, invocationDirectory: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const absoluteStagesDirectory = path.resolve(invocationDirectory, stagesDirectory);
+    const stageFiles = yield* discoverStageFiles(absoluteStagesDirectory);
+    if (!stageFiles.length)
+      return yield* Effect.fail(
+        new PassesError(`${stagesDirectory}: no Markdown (.md) stages found`),
+      );
+    const stages: Stage[] = [];
+    const errors: unknown[] = [];
+    const stageFilesByName = new Map<string, string>();
+    const stageFilesBySlug = new Map<string, string>();
+    for (const stagePath of stageFiles) {
+      const file = path.relative(invocationDirectory, stagePath) || stagePath;
+      const result = yield* fs.readFile(stagePath).pipe(
+        Effect.mapError((error) => error.cause ?? error),
+        // Match Node's UTF-8 decoding, including preservation of a leading BOM.
+        Effect.map((source) => Buffer.from(source).toString("utf8")),
+        Effect.flatMap((source) => parseStage(source, file)),
+        Effect.result,
+      );
+      if (Result.isFailure(result)) {
+        errors.push(result.failure);
+        continue;
+      }
+      const stage = result.success;
+      const duplicateNameFile = stageFilesByName.get(stage.name);
+      const collidingSlugFile = stageFilesBySlug.get(stage.slug);
+      if (duplicateNameFile) {
+        errors.push(`${file}: name "${stage.name}" duplicates ${duplicateNameFile}`);
+        continue;
+      }
+      if (collidingSlugFile) {
+        errors.push(
+          `${file}: name "${stage.name}" has slug "${stage.slug}", which collides with ${collidingSlugFile}`,
         );
-      const stages: Stage[] = [];
-      const errors: string[] = [];
-      const stageNames = new Map<string, string>();
-      const stageSlugs = new Map<string, string>();
-      for (const stagePath of stageFiles) {
-        const file = path.relative(invocationDirectory, stagePath) || stagePath;
-        try {
-          const source = yield* Effect.match(fs.readFile(stagePath), {
-            onFailure: (error) => {
-              errors.push(message(error.cause ?? error));
-              return undefined;
-            },
-            // Match Node's UTF-8 decoding, including preservation of a leading BOM.
-            onSuccess: (source) => Buffer.from(source).toString("utf8"),
-          });
-          if (source === undefined) continue;
-          const stage = parseStage(source, file);
-          const duplicate = stageNames.get(stage.name);
-          const collision = stageSlugs.get(stage.slug);
-          if (duplicate)
-            throw new PassesError(`${file}: name "${stage.name}" duplicates ${duplicate}`);
-          if (collision)
-            throw new PassesError(
-              `${file}: name "${stage.name}" has slug "${stage.slug}", which collides with ${collision}`,
-            );
-          stageNames.set(stage.name, file);
-          stageSlugs.set(stage.slug, file);
-          stages.push(stage);
-        } catch (error) {
-          errors.push(message(error));
-        }
+        continue;
       }
-      if (errors.length) {
-        return yield* Effect.fail(
-          new PassesError(
-            `Invalid stage configuration:\n${errors.map((e) => `  ${e}`).join("\n")}`,
-          ),
-        );
-      }
-      const layersByStep = new Map<number, Stage[]>();
-      for (const stage of stages) {
-        const layer = layersByStep.get(stage.step);
-        if (layer) layer.push(stage);
-        else layersByStep.set(stage.step, [stage]);
-      }
-      return {
-        invocationDirectory,
-        stagesDirectory: absoluteStagesDirectory,
-        stages,
-        layers: [...layersByStep]
-          .sort(([left], [right]) => left - right)
-          .map(([step, layerStages]) => ({ step, stages: layerStages })),
-      };
-    }).pipe(
-      Effect.mapError((error) =>
-        error instanceof PassesError
-          ? error
-          : new PassesError(`Could not read stages: ${message(error)}`),
-      ),
-    ),
+      stageFilesByName.set(stage.name, file);
+      stageFilesBySlug.set(stage.slug, file);
+      stages.push(stage);
+    }
+    if (errors.length) {
+      return yield* Effect.fail(
+        new PassesError(
+          `Invalid stage configuration:\n${errors.map((e) => `  ${message(e)}`).join("\n")}`,
+          { cause: errors },
+        ),
+      );
+    }
+    const layersByStep = new Map<number, Stage[]>();
+    for (const stage of stages) {
+      const layerStages = layersByStep.get(stage.step);
+      if (layerStages) layerStages.push(stage);
+      else layersByStep.set(stage.step, [stage]);
+    }
+    return {
+      invocationDirectory,
+      stages,
+      layers: [...layersByStep]
+        .sort(([left], [right]) => left - right)
+        .map(([step, layerStages]) => ({ step, stages: layerStages })),
+    };
+  },
+  Effect.mapError((error) =>
+    error instanceof PassesError
+      ? error
+      : new PassesError(`Could not read stages: ${message(error)}`, { cause: error }),
+  ),
 );
 
 export function renderPlanGraph(plan: Plan): string {

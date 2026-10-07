@@ -1,8 +1,8 @@
 ---
 name: Apply Effect modules
 step: 3
-model: gpt-6-luna
-reasoning_effort: xhigh
+model: gpt-6.1-sol
+reasoning_effort: high
 ---
 
 Apply existing Effect functions, modules, and compositions where they simplify the implementation, make correctness easier to establish, or improve measured performance. Preserve observable behavior, including errors, interruption, concurrency, and resource lifetimes.

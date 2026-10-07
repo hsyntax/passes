@@ -12,8 +12,8 @@ const runStage = Effect.fn("Runner.runStage")(
     stage: Stage,
     invocationDirectory: string,
     reporter: Reporter,
-    scopeOverride?: string,
-    fast = false,
+    scopeOverride: string | undefined,
+    fastModeEnabled: boolean,
   ) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -24,29 +24,32 @@ const runStage = Effect.fn("Runner.runStage")(
         );
         // Register first so process termination/draining runs before the final line flush.
         yield* Effect.addFinalizer(() =>
-          Effect.all([stdout.end(), stderr.end()], { discard: true }).pipe(
-            Effect.catch(() => Effect.void),
-          ),
+          Effect.ignore(Effect.all([stdout.end(), stderr.end()], { discard: true })),
         );
         const proc = yield* startProcess(
           "codex",
-          buildCodexExecArgs(stage, invocationDirectory, fast),
+          buildCodexExecArgs(stage, invocationDirectory, fastModeEnabled),
           invocationDirectory,
           stagePrompt(stage, scopeOverride),
         );
-        const stdoutFiber = yield* Effect.forkScoped(
-          Stream.decodeText(proc.stdout).pipe(Stream.runForEach((chunk) => stdout.data(chunk))),
+        const stdoutFiber = yield* proc.stdout.pipe(
+          Stream.decodeText,
+          Stream.runForEach(stdout.data),
+          Effect.forkScoped,
         );
-        const stderrFiber = yield* Effect.forkScoped(
-          Stream.decodeText(proc.stderr).pipe(Stream.runForEach((chunk) => stderr.data(chunk))),
+        const stderrFiber = yield* proc.stderr.pipe(
+          Stream.decodeText,
+          Stream.runForEach(stderr.data),
+          Effect.forkScoped,
         );
         const processExit = yield* waitForExit(proc);
         yield* Effect.all([Fiber.join(stdoutFiber), Fiber.join(stderrFiber)]).pipe(
           Effect.timeout("1 second"),
           Effect.mapError(
-            () =>
+            (cause) =>
               new PassesError(
                 `${stage.name}: Codex exited but a descendant kept its output pipe open; cancelling the process group`,
+                { cause },
               ),
           ),
         );
@@ -83,28 +86,31 @@ const pushPendingCommits = Effect.fn("Runner.pushPendingCommits")(
           reporter.detail(`[git push stderr] ${line}`, "stderr"),
         );
         yield* Effect.addFinalizer(() =>
-          Effect.all([stdout.end(), stderr.end()], { discard: true }).pipe(
-            Effect.catch(() => Effect.void),
-          ),
+          Effect.ignore(Effect.all([stdout.end(), stderr.end()], { discard: true })),
         );
         const proc = yield* startProcess(
           "git",
           ["-c", "push.autoSetupRemote=true", "push"],
           invocationDirectory,
         );
-        const stdoutFiber = yield* Effect.forkScoped(
-          Stream.decodeText(proc.stdout).pipe(Stream.runForEach((chunk) => stdout.data(chunk))),
+        const stdoutFiber = yield* proc.stdout.pipe(
+          Stream.decodeText,
+          Stream.runForEach(stdout.data),
+          Effect.forkScoped,
         );
-        const stderrFiber = yield* Effect.forkScoped(
-          Stream.decodeText(proc.stderr).pipe(Stream.runForEach((chunk) => stderr.data(chunk))),
+        const stderrFiber = yield* proc.stderr.pipe(
+          Stream.decodeText,
+          Stream.runForEach(stderr.data),
+          Effect.forkScoped,
         );
         const processExit = yield* waitForExit(proc);
         yield* Effect.all([Fiber.join(stdoutFiber), Fiber.join(stderrFiber)]).pipe(
           Effect.timeout("1 second"),
           Effect.mapError(
-            () =>
+            (cause) =>
               new PassesError(
                 "git push exited but a descendant kept its output pipe open; check the remote before retrying.",
+                { cause },
               ),
           ),
         );
@@ -119,62 +125,67 @@ const pushPendingCommits = Effect.fn("Runner.pushPendingCommits")(
     ),
 );
 
-export const runPlan = Effect.fn("Runner.runPlan")(
-  (plan: Plan, reporter: Reporter, scopeOverride?: string, fast = false) =>
-    Effect.gen(function* () {
-      const catalog = yield* checkCodexCompatibility(plan, fast);
-      const fastModels = new Set(
-        catalog
+export const runPlan = Effect.fn("Runner.runPlan")(function* (
+  plan: Plan,
+  reporter: Reporter,
+  scopeOverride?: string,
+  fastModeRequested = false,
+) {
+  const catalog = yield* checkCodexCompatibility(plan, fastModeRequested);
+  const fastModeModels = new Set(
+    fastModeRequested
+      ? catalog
           .filter(
             (model) =>
-              fast &&
-              (model.serviceTiers?.some((tier) => tier.id === "priority" || tier.id === "fast") ||
-                (!model.serviceTiers?.length && model.additionalSpeedTiers?.includes("fast"))),
+              model.serviceTiers?.some((tier) => tier.id === "priority" || tier.id === "fast") ||
+              (!model.serviceTiers?.length && model.additionalSpeedTiers?.includes("fast")),
           )
-          .map((model) => model.model),
-      );
-      if (fast) {
-        for (const model of new Set(plan.stages.map((stage) => stage.model))) {
-          yield* reporter.out(
-            fastModels.has(model)
-              ? `${model}: fast mode requested.`
-              : `${model}: fast mode not advertised; using Codex defaults.`,
-          );
-        }
-      }
+          .map((model) => model.model)
+      : [],
+  );
+  if (fastModeRequested) {
+    for (const model of new Set(plan.stages.map((stage) => stage.model))) {
       yield* reporter.out(
-        "Model/effort catalog check passed; live access and quota are checked by Codex during execution.",
+        fastModeModels.has(model)
+          ? `${model}: fast mode requested.`
+          : `${model}: fast mode not advertised; using Codex defaults.`,
       );
-      for (const layer of plan.layers) {
-        yield* reporter.out(
-          `Step ${layer.step}: starting ${layer.stages.length} stage${layer.stages.length === 1 ? "" : "s concurrently"}`,
-        );
-        // Effect interrupts sibling fibers and waits for their scoped process cleanup on failure.
-        yield* Effect.forEach(
-          layer.stages,
-          (stage) =>
-            runStage(
-              stage,
-              plan.invocationDirectory,
-              reporter,
-              scopeOverride,
-              fastModels.has(stage.model),
-            ),
-          {
-            concurrency: MAX_CONCURRENT_STAGES,
-            discard: true,
-          },
-        );
-      }
-      const head = yield* runCommand(
-        "git",
-        ["log", "-1", "--format=%h %s"],
-        plan.invocationDirectory,
-      );
-      yield* reporter.out(
-        head.code === 0 ? `Latest commit: ${head.stdout.trim()}` : "No commit available.",
-      );
-      yield* pushPendingCommits(plan.invocationDirectory, reporter);
-      yield* reporter.out(`Finished: ${plan.stages.length} stages completed`);
-    }),
-);
+    }
+  }
+  yield* reporter.out(
+    "Model/effort catalog check passed; live access and quota are checked by Codex during execution.",
+  );
+  for (const layer of plan.layers) {
+    yield* reporter.out(
+      `Step ${layer.step}: starting ${layer.stages.length} stage${layer.stages.length === 1 ? "" : "s concurrently"}`,
+    );
+    // Effect interrupts sibling fibers and waits for their scoped process cleanup on failure.
+    yield* Effect.forEach(
+      layer.stages,
+      (stage) =>
+        runStage(
+          stage,
+          plan.invocationDirectory,
+          reporter,
+          scopeOverride,
+          fastModeModels.has(stage.model),
+        ),
+      {
+        concurrency: MAX_CONCURRENT_STAGES,
+        discard: true,
+      },
+    );
+  }
+  const latestCommit = yield* runCommand(
+    "git",
+    ["log", "-1", "--format=%h %s"],
+    plan.invocationDirectory,
+  );
+  yield* reporter.out(
+    latestCommit.code === 0
+      ? `Latest commit: ${latestCommit.stdout.trim()}`
+      : "No commit available.",
+  );
+  yield* pushPendingCommits(plan.invocationDirectory, reporter);
+  yield* reporter.out(`Finished: ${plan.stages.length} stages completed`);
+});
