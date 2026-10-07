@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { cleanup, timeout, workspace } from "./helpers.ts";
 
@@ -15,37 +22,49 @@ function shellQuote(value: string): string {
 function syncWorkspace(annotated: boolean) {
   const ws = workspace({ git: false, codex: false });
   const destination = join(ws.root, "repos/effect");
-  mkdirSync(destination, { recursive: true });
-  function git(...args: string[]): string {
+  const remote = join(ws.root, "remote.git");
+  function gitAt(directory: string, ...args: string[]): string {
     const result = Bun.spawnSync([gitExecutable!, ...args], {
-      cwd: destination,
+      cwd: directory,
       env: ws.env,
     });
     if (result.exitCode !== 0) throw new Error(result.stderr.toString());
     return result.stdout.toString().trim();
   }
-  git("init", "--quiet", "--initial-branch=main");
-  git("config", "user.name", "Passes test");
-  git("config", "user.email", "passes@example.invalid");
+  const git = (...args: string[]) => gitAt(destination, ...args);
+  const upstream = (...args: string[]) => gitAt(ws.repo, ...args);
+  const execPath = gitAt(ws.root, "--exec-path");
+  for (const executable of ["git-upload-pack", "git-receive-pack"]) {
+    symlinkSync(join(execPath, executable), join(ws.root, "bin", executable));
+  }
+  upstream("init", "--quiet", "--initial-branch=main");
+  upstream("config", "user.name", "Passes test");
+  upstream("config", "user.email", "passes@example.invalid");
   const packages = [
     ["packages/effect", "effect"],
     ["packages/platform/bun", "@effect/platform-bun"],
     ["packages/platform/node-shared", "@effect/platform-node-shared"],
   ] as const;
   for (const [directory, name] of packages) {
-    mkdirSync(join(destination, directory), { recursive: true });
+    mkdirSync(join(ws.repo, directory), { recursive: true });
     writeFileSync(
-      join(destination, directory, "package.json"),
+      join(ws.repo, directory, "package.json"),
       JSON.stringify({ name, version: "4.0.1" }),
     );
   }
-  git("add", ".");
-  git("commit", "--quiet", "-m", "Release");
-  const release = git("rev-parse", "HEAD");
+  writeFileSync(join(ws.repo, "release.txt"), "original release\n");
+  upstream("add", ".");
+  upstream("commit", "--quiet", "-m", "Release");
+  const release = upstream("rev-parse", "HEAD");
   const tag = "effect@4.0.1";
-  if (annotated) git("tag", "-a", tag, "-m", "Release tag");
-  else git("tag", tag);
-  git("remote", "add", "origin", "https://github.com/Effect-TS/effect.git");
+  if (annotated) upstream("tag", "-a", tag, "-m", "Release tag");
+  else upstream("tag", tag);
+  gitAt(ws.root, "clone", "--quiet", "--bare", ws.repo, remote);
+  mkdirSync(dirname(destination));
+  gitAt(ws.root, "clone", "--quiet", remote, destination);
+  git("config", "user.name", "Passes test");
+  git("config", "user.email", "passes@example.invalid");
+  git("remote", "set-url", "origin", "https://github.com/Effect-TS/effect.git");
 
   const script = join(ws.root, "scripts/sync-repos.ts");
   mkdirSync(dirname(script));
@@ -56,14 +75,15 @@ function syncWorkspace(annotated: boolean) {
       packages: Object.fromEntries(packages.map(([, name]) => [name, [`${name}@4.0.1`]])),
     }),
   );
-  const callsPath = join(ws.root, "git-calls");
   const wrapper = join(ws.root, "bin/git");
-  // Fetch is the only network operation. All revision reads and checkout use real Git.
+  // Redirect the network boundary to a local bare remote, retaining real fetch
+  // and tag replacement. Only the checkout-failure test injects a no-op command.
   writeFileSync(
     wrapper,
     `#!/bin/sh
-printf '%s\\n' "$*" >> ${shellQuote(callsPath)}
-if [ "$1" = fetch ]; then exit 0; fi
+if [ "$1" = fetch ]; then
+  exec ${shellQuote(gitExecutable!)} -c ${shellQuote(`url.${remote}.insteadOf=https://github.com/Effect-TS/effect.git`)} "$@"
+fi
 if [ "$1" = checkout ] && [ "$PASSES_TEST_SKIP_CHECKOUT" = 1 ]; then exit 0; fi
 exec ${shellQuote(gitExecutable!)} "$@"
 `,
@@ -71,7 +91,6 @@ exec ${shellQuote(gitExecutable!)} "$@"
   chmodSync(wrapper, 0o755);
 
   async function sync() {
-    writeFileSync(callsPath, "");
     const child = Bun.spawn([process.execPath, script], {
       cwd: ws.root,
       env: ws.env,
@@ -84,29 +103,24 @@ exec ${shellQuote(gitExecutable!)} "$@"
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
     ]);
-    const calls = readFileSync(callsPath, "utf8").trim().split("\n");
-    return { code, stdout, stderr, calls };
+    return { code, stdout, stderr };
   }
-  return { ws, destination, git, release, tag, sync };
+  return { ws, destination, remote, git, upstream, gitAt, release, tag, sync };
 }
 
 describe("repository sync revision checks", () => {
   test.each([false, true])(
     "verifies the release commit with annotated=%s",
     async (annotated) => {
-      const { git, release, tag, sync } = syncWorkspace(annotated);
-      // The tag object differs from the commit for annotated tags.
-      expect(git("rev-parse", tag) === release).toBe(!annotated);
-      git("commit", "--quiet", "--allow-empty", "-m", "Later commit");
+      const { destination, git, release, tag, sync } = syncWorkspace(annotated);
+      writeFileSync(join(destination, "release.txt"), "unrelated local history\n");
+      git("add", ".");
+      git("commit", "--quiet", "-m", "Later commit");
       const result = await sync();
-      expect(result.code).toBe(0);
+      expect(result.code, result.stderr).toBe(0);
       expect(git("rev-parse", "HEAD")).toBe(release);
+      expect(readFileSync(join(destination, "release.txt"), "utf8")).toBe("original release\n");
       expect(result.stdout).toContain(`Ready: repos/effect ${tag} (${release.slice(0, 12)})`);
-      expect(result.calls).toHaveLength(5);
-      expect(result.calls.filter((call) => call.startsWith("rev-"))).toEqual([
-        `rev-parse ${tag}^{commit} HEAD`,
-      ]);
-      expect(result.calls.filter((call) => call.startsWith("fetch "))).toHaveLength(1);
     },
     timeout,
   );
@@ -130,9 +144,9 @@ describe("repository sync revision checks", () => {
   test(
     "fails when the release revision cannot be resolved",
     async () => {
-      const { ws, git, tag, sync } = syncWorkspace(true);
+      const { remote, git, gitAt, tag, sync } = syncWorkspace(true);
       git("tag", "-d", tag);
-      ws.env.PASSES_TEST_SKIP_CHECKOUT = "1";
+      gitAt(remote, "tag", "-d", tag);
       const result = await sync();
       expect(result.code).toBe(1);
       expect(result.stderr).toContain(tag);
@@ -144,17 +158,22 @@ describe("repository sync revision checks", () => {
   test(
     "fetches and verifies a moved release tag on each sync",
     async () => {
-      const { git, release, tag, sync } = syncWorkspace(true);
-      expect((await sync()).code).toBe(0);
-      git("commit", "--quiet", "--allow-empty", "-m", "New release commit");
-      git("tag", "-f", "-a", tag, "-m", "Moved release tag");
-      const nextRelease = git("rev-parse", "HEAD");
-      expect(nextRelease).not.toBe(release);
+      const { ws, destination, remote, git, upstream, release, tag, sync } = syncWorkspace(true);
+      const first = await sync();
+      expect(first.code, first.stderr).toBe(0);
+      writeFileSync(join(ws.repo, "release.txt"), "updated release\n");
+      upstream("add", ".");
+      upstream("commit", "--quiet", "-m", "New release commit");
+      upstream("tag", "-f", "-a", tag, "-m", "Moved release tag");
+      const nextRelease = upstream("rev-parse", "HEAD");
+      upstream("push", "--force", remote, `refs/tags/${tag}`);
+      // Only the remote changed; syncing must discover and check out its new release.
+      expect(git("rev-parse", "HEAD")).toBe(release);
       const result = await sync();
-      expect(result.code).toBe(0);
+      expect(result.code, result.stderr).toBe(0);
+      expect(git("rev-parse", "HEAD")).toBe(nextRelease);
+      expect(readFileSync(join(destination, "release.txt"), "utf8")).toBe("updated release\n");
       expect(result.stdout).toContain(`(${nextRelease.slice(0, 12)})`);
-      expect(result.calls).toHaveLength(5);
-      expect(result.calls.filter((call) => call.startsWith("fetch "))).toHaveLength(1);
     },
     timeout,
   );

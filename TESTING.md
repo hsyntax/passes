@@ -21,7 +21,7 @@ bun dist/passes.js validate stages
 
 ## Automated checks
 
-- 145 CLI and repository-sync behavior tests passing, zero failures
+- 149 CLI and repository-sync behavior tests passing, zero failures
 - Strict TypeScript typecheck passing
 - Oxlint lint and Oxfmt formatting checks passing
 - Bundled Bun build passing
@@ -371,3 +371,30 @@ Checks run on macOS with Bun 1.4.2: the five focused tests before and after the
 change; `bun run check` (typecheck, lint, formatting, 145 passing tests, and build);
 and a separate strict TypeScript check of `scripts/sync-repos.ts`, which the
 project tsconfig excludes. No timing improvement is claimed.
+
+## Repository-sync test-principle review
+
+Reviewed all six test files, the shared helpers, and the Codex fixture against
+the behavior, independence, determinism, refactoring, and regression principles.
+The CLI tests observe the public command and the external Codex process boundary;
+literal prompt and argv expectations describe the documented contract. Real Git,
+isolated environments, readiness/release coordination, and process cleanup remain.
+
+Before → After: exact Git subprocess counts and revision-command arguments →
+the expected release commit, checked-out file content, and success diagnostic.
+Stubbed fetch with a locally moved tag → real fetch from a temporary bare remote
+whose release tag changes independently of the checkout. Missing releases now
+fail through real Git. The wrapper redirects fetching to the local remote and
+only suppresses checkout in the explicit checkout-failure case. Logging checks
+retain live delivery, channel separation, exit status, and complete log coverage.
+
+Temporary script copies verified two plausible regressions: dry-run fetching and
+fetching without forced tag replacement passed the original tests and failed the
+revised moved-tag test. Splitting the combined revision read into two equivalent
+Git commands failed the original call-count assertions and passed all five
+revised sync tests. Production sources were untouched and probe copies removed.
+
+Checks run on macOS with Bun 1.4.2: baseline `bun test` (149 passing), focused
+`bun test test/sync-repos.test.ts` (five passing), the three before/after probes
+above, and `bun run check` (typecheck, lint, formatting, 149 passing tests, and
+build). Final documentation formatting and `git diff --check` also passed.
