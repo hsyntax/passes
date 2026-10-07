@@ -250,15 +250,16 @@ describe("passes CLI acceptance", () => {
     timeout,
   );
 
-  test(
-    "rejects an older Codex version before querying models or executing stages",
-    async () => {
+  test.each(["0.158.99", "0.159.1"])(
+    "rejects older Codex %s before querying models or executing stages",
+    async (version) => {
       const ws = workspace();
-      ws.env.PASSES_TEST_CODEX_VERSION = "0.159.1";
+      ws.env.PASSES_TEST_CODEX_VERSION = version;
       stage(ws, "stage.md");
       const result = await launch(ws).result;
       expect(result.code).toBe(1);
-      expect(result.stderr).toMatch(/0\.159\.1.*too old/i);
+      expect(result.stderr).toContain(version);
+      expect(result.stderr).toMatch(/too old/i);
       expect(result.stderr).toContain("0.159.2 or newer");
       expect(events(ws).some((event) => event.kind === "app-server")).toBe(false);
       expect(events(ws).some((event) => event.kind === "start")).toBe(false);

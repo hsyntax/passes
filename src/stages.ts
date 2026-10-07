@@ -117,9 +117,6 @@ const parseStage = Effect.fn(function* (source: string, file: string) {
       (cause) => new PassesError(`${file}: frontmatter: ${message(cause)}`, { cause }),
     ),
   );
-  if (!Number.isSafeInteger(stageFrontmatter.step)) {
-    return yield* Effect.fail(new PassesError(`${file}: step must be a nonnegative safe integer`));
-  }
   const prompt = text.slice(closingOffset + closingFence[0].length);
   if (!prompt.trim())
     return yield* Effect.fail(new PassesError(`${file}: prompt body must not be empty`));

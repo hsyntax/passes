@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   chmodSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   readFileSync,
   rmSync,
@@ -226,6 +227,27 @@ describe("repository sync revision checks", () => {
 });
 
 describe("repository sync Effect boundaries", () => {
+  test.each(["effect", "@effect/platform-bun", "@effect/platform-node-shared"])(
+    "rejects a missing %s resolution before creating a checkout",
+    async (name) => {
+      const { ws, destination, sync } = syncWorkspace(false);
+      const lockfilePath = join(ws.root, "bun.lock");
+      const lockfile = JSON.parse(readFileSync(lockfilePath, "utf8")) as {
+        packages: Record<string, string[]>;
+      };
+      delete lockfile.packages[name];
+      writeFileSync(lockfilePath, JSON.stringify(lockfile));
+      rmSync(destination, { recursive: true });
+
+      const result = await sync();
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(`Could not find a resolved version for ${name} in bun.lock`);
+      expect(result.stdout).not.toContain("Cloning");
+      expect(existsSync(destination)).toBe(false);
+    },
+    timeout,
+  );
+
   test(
     "reads each release manifest once without an existence probe",
     async () => {

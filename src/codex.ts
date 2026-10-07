@@ -205,8 +205,10 @@ export const checkCodexCompatibility = Effect.fn("Codex.checkCodexCompatibility"
             `Could not determine Codex CLI version. Install Codex CLI 0.159.2 or newer. ${version.stderr.trim()}`,
           ),
         );
-      const [major, minor, patch] = match.slice(1).map(Number);
-      if (major === 0 && ((minor ?? 0) < 159 || (minor === 159 && (patch ?? 0) < 2)))
+      const major = Number(match[1]);
+      const minor = Number(match[2]);
+      const patch = Number(match[3]);
+      if (major === 0 && (minor < 159 || (minor === 159 && patch < 2)))
         return yield* Effect.fail(
           new PassesError(
             `Codex ${match[0]} is too old. Install Codex CLI 0.159.2 or newer for the verified model-catalog protocol and execution flags.`,

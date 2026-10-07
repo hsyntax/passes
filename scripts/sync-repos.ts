@@ -128,14 +128,12 @@ function normalizeRemote(remote: string): string {
 // selects the tag; each package must match its own resolved version.
 const syncRepository = Effect.fn("Repos.syncRepository")(function* (
   repository: Repository,
-  resolvedPackageVersions: ReadonlyArray<string>,
+  resolvedPackageVersions: readonly [string, ...string[]],
 ) {
   const fs = yield* FileSystem.FileSystem;
   const destination = resolve(reposDirectory, repository.directory);
   const releasePackage = repository.packages[0];
   const version = resolvedPackageVersions[0];
-  if (version === undefined)
-    return yield* Effect.fail(new Error(`Missing version for ${releasePackage.packageName}`));
   const tag = repository.tag(version);
 
   if (!(yield* fs.exists(destination))) {
