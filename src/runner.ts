@@ -125,67 +125,67 @@ const pushPendingCommits = Effect.fn("Runner.pushPendingCommits")(
     ),
 );
 
-export const runPlan = Effect.fn("Runner.runPlan")(
-  (plan: Plan, reporter: Reporter, scopeOverride?: string, fastModeRequested = false) =>
-    Effect.gen(function* () {
-      const catalog = yield* checkCodexCompatibility(plan, fastModeRequested);
-      const fastModeModels = new Set(
-        fastModeRequested
-          ? catalog
-              .filter(
-                (model) =>
-                  model.serviceTiers?.some(
-                    (tier) => tier.id === "priority" || tier.id === "fast",
-                  ) ||
-                  (!model.serviceTiers?.length && model.additionalSpeedTiers?.includes("fast")),
-              )
-              .map((model) => model.model)
-          : [],
-      );
-      if (fastModeRequested) {
-        for (const model of new Set(plan.stages.map((stage) => stage.model))) {
-          yield* reporter.out(
-            fastModeModels.has(model)
-              ? `${model}: fast mode requested.`
-              : `${model}: fast mode not advertised; using Codex defaults.`,
-          );
-        }
-      }
+export const runPlan = Effect.fn("Runner.runPlan")(function* (
+  plan: Plan,
+  reporter: Reporter,
+  scopeOverride?: string,
+  fastModeRequested = false,
+) {
+  const catalog = yield* checkCodexCompatibility(plan, fastModeRequested);
+  const fastModeModels = new Set(
+    fastModeRequested
+      ? catalog
+          .filter(
+            (model) =>
+              model.serviceTiers?.some((tier) => tier.id === "priority" || tier.id === "fast") ||
+              (!model.serviceTiers?.length && model.additionalSpeedTiers?.includes("fast")),
+          )
+          .map((model) => model.model)
+      : [],
+  );
+  if (fastModeRequested) {
+    for (const model of new Set(plan.stages.map((stage) => stage.model))) {
       yield* reporter.out(
-        "Model/effort catalog check passed; live access and quota are checked by Codex during execution.",
+        fastModeModels.has(model)
+          ? `${model}: fast mode requested.`
+          : `${model}: fast mode not advertised; using Codex defaults.`,
       );
-      for (const layer of plan.layers) {
-        yield* reporter.out(
-          `Step ${layer.step}: starting ${layer.stages.length} stage${layer.stages.length === 1 ? "" : "s concurrently"}`,
-        );
-        // Effect interrupts sibling fibers and waits for their scoped process cleanup on failure.
-        yield* Effect.forEach(
-          layer.stages,
-          (stage) =>
-            runStage(
-              stage,
-              plan.invocationDirectory,
-              reporter,
-              scopeOverride,
-              fastModeModels.has(stage.model),
-            ),
-          {
-            concurrency: MAX_CONCURRENT_STAGES,
-            discard: true,
-          },
-        );
-      }
-      const latestCommit = yield* runCommand(
-        "git",
-        ["log", "-1", "--format=%h %s"],
-        plan.invocationDirectory,
-      );
-      yield* reporter.out(
-        latestCommit.code === 0
-          ? `Latest commit: ${latestCommit.stdout.trim()}`
-          : "No commit available.",
-      );
-      yield* pushPendingCommits(plan.invocationDirectory, reporter);
-      yield* reporter.out(`Finished: ${plan.stages.length} stages completed`);
-    }),
-);
+    }
+  }
+  yield* reporter.out(
+    "Model/effort catalog check passed; live access and quota are checked by Codex during execution.",
+  );
+  for (const layer of plan.layers) {
+    yield* reporter.out(
+      `Step ${layer.step}: starting ${layer.stages.length} stage${layer.stages.length === 1 ? "" : "s concurrently"}`,
+    );
+    // Effect interrupts sibling fibers and waits for their scoped process cleanup on failure.
+    yield* Effect.forEach(
+      layer.stages,
+      (stage) =>
+        runStage(
+          stage,
+          plan.invocationDirectory,
+          reporter,
+          scopeOverride,
+          fastModeModels.has(stage.model),
+        ),
+      {
+        concurrency: MAX_CONCURRENT_STAGES,
+        discard: true,
+      },
+    );
+  }
+  const latestCommit = yield* runCommand(
+    "git",
+    ["log", "-1", "--format=%h %s"],
+    plan.invocationDirectory,
+  );
+  yield* reporter.out(
+    latestCommit.code === 0
+      ? `Latest commit: ${latestCommit.stdout.trim()}`
+      : "No commit available.",
+  );
+  yield* pushPendingCommits(plan.invocationDirectory, reporter);
+  yield* reporter.out(`Finished: ${plan.stages.length} stages completed`);
+});

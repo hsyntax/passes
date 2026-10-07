@@ -462,3 +462,30 @@ Checks run on macOS with Bun 1.4.2: baseline sync tests (13 passing), the native
 manifest-call measurement before and after, `bun run check` (typecheck, lint,
 formatting, 165 passing tests, and build), final documentation formatting, and
 `git diff --check`. No network or live model calls were made.
+
+## Effect function constructors
+
+Reviewed the vendored Effect 4.0.1 `fn`, `fnUntraced`, and `gen` implementations.
+Unnamed `fn` records definition/call frames without a wrapper span; named `fn`
+also starts a span when run. Existing named operations retain their span names.
+No helper was changed to `fnUntraced` without a reason to omit diagnostic frames.
+
+Before → After: `Effect.fn((args) => Effect.gen(function* () { ... }))` →
+`Effect.fn(function* (args) { ... })` for reusable generator bodies. Scoped inline
+composition remains `Effect.gen`. The Git-output collector now uses unnamed `fn`
+for a diagnostic boundary, retaining its generic stream errors and overflow error.
+Pure functions and the call-time line-buffer callbacks remain ordinary functions.
+No performance claim is made.
+
+A temporary before/after probe compared successful and failing plan loads with a
+recording tracer and an instrumented filesystem service. Span names, completion,
+outcomes, parents, and definition/call frame names matched; constructing the named
+function's effect started no span, and unnamed helpers created no wrapper spans.
+A deferred-output probe constructed several line callbacks before running them in
+a different order and confirmed that each retained its own call-time batch.
+A source audit confirmed all existing named span names and counts were preserved.
+
+Checks run on macOS with Bun 1.4.2: `bun run check` (typecheck, lint, formatting,
+169 passing tests, and build), the temporary observability and deferred-output
+probes, the named-span source audit, final documentation formatting, and
+`git diff --check`.

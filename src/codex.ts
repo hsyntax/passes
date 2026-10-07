@@ -83,16 +83,14 @@ const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
             Effect.asVoid,
           ),
         );
-        const requestModelCatalogPage = Effect.fn((cursor?: string) =>
-          Effect.gen(function* () {
-            requestId += 1;
-            yield* sendRpcMessage({
-              id: requestId,
-              method: "model/list",
-              params: { limit: 100, includeHidden: true, ...(cursor ? { cursor } : {}) },
-            });
-          }),
-        );
+        const requestModelCatalogPage = Effect.fn(function* (cursor?: string) {
+          requestId += 1;
+          yield* sendRpcMessage({
+            id: requestId,
+            method: "model/list",
+            params: { limit: 100, includeHidden: true, ...(cursor ? { cursor } : {}) },
+          });
+        });
         const processModelCatalogLine = Effect.fn(
           function* (line: string) {
             if (!line.trim()) return true;
@@ -144,23 +142,21 @@ const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
               ),
           ),
         );
-        const processModelCatalogChunk = Effect.fn((chunk: string) =>
-          Effect.gen(function* () {
-            pendingResponseLine += chunk;
-            let newline = pendingResponseLine.indexOf("\n");
-            while (newline >= 0) {
-              const line = pendingResponseLine.slice(0, newline);
-              pendingResponseLine = pendingResponseLine.slice(newline + 1);
-              if (!(yield* processModelCatalogLine(line))) return false;
-              newline = pendingResponseLine.indexOf("\n");
-            }
-            if (pendingResponseLine.length > 1_048_576)
-              return yield* Effect.fail(
-                new PassesError("Codex model catalog: response exceeded 1 MiB without a newline"),
-              );
-            return true;
-          }),
-        );
+        const processModelCatalogChunk = Effect.fn(function* (chunk: string) {
+          pendingResponseLine += chunk;
+          let newline = pendingResponseLine.indexOf("\n");
+          while (newline >= 0) {
+            const line = pendingResponseLine.slice(0, newline);
+            pendingResponseLine = pendingResponseLine.slice(newline + 1);
+            if (!(yield* processModelCatalogLine(line))) return false;
+            newline = pendingResponseLine.indexOf("\n");
+          }
+          if (pendingResponseLine.length > 1_048_576)
+            return yield* Effect.fail(
+              new PassesError("Codex model catalog: response exceeded 1 MiB without a newline"),
+            );
+          return true;
+        });
         const stdoutFiber = yield* proc.stdout.pipe(
           Stream.decodeText,
           Stream.runForEachWhile(processModelCatalogChunk),
@@ -188,55 +184,55 @@ const loadModelCatalog = Effect.fn("Codex.loadModelCatalog")(
   ),
 );
 
-export const checkCodexCompatibility = Effect.fn("Codex.checkCodexCompatibility")(
-  (plan: Plan, fastModeRequested = false) =>
-    Effect.gen(function* () {
-      if (process.platform === "win32")
-        return yield* Effect.fail(
-          new PassesError(
-            "passes currently supports macOS and Linux; safe process-group cancellation requires POSIX.",
-          ),
-        );
-      const version = yield* runCommand("codex", ["--version"], plan.invocationDirectory);
-      const match = /codex(?:-cli)?\s+(\d+)\.(\d+)\.(\d+)/.exec(version.stdout);
-      if (version.code !== 0 || !match)
-        return yield* Effect.fail(
-          new PassesError(
-            `Could not determine Codex CLI version. Install Codex CLI 0.159.2 or newer. ${version.stderr.trim()}`,
-          ),
-        );
-      const major = Number(match[1]);
-      const minor = Number(match[2]);
-      const patch = Number(match[3]);
-      if (major === 0 && (minor < 159 || (minor === 159 && patch < 2)))
-        return yield* Effect.fail(
-          new PassesError(
-            `Codex ${match[0]} is too old. Install Codex CLI 0.159.2 or newer for the verified model-catalog protocol and execution flags.`,
-          ),
-        );
-      const catalog = yield* loadModelCatalog(plan.invocationDirectory, fastModeRequested);
-      const errors: string[] = [];
-      for (const stage of plan.stages) {
-        const model = catalog.find((item) => item.model === stage.model);
-        if (!model)
-          errors.push(
-            `${stage.file}: model "${stage.model}" is not in the installed Codex catalog. Available models: ${catalog.map((m) => m.model).join(", ")}`,
-          );
-        else if (
-          !model.supportedReasoningEfforts.some(
-            (effort) => effort.reasoningEffort === stage.reasoning_effort,
-          )
-        )
-          errors.push(
-            `${stage.file}: reasoning_effort "${stage.reasoning_effort}" is unsupported for model "${stage.model}". Supported: ${model.supportedReasoningEfforts.map((e) => e.reasoningEffort).join(", ") || "none"}`,
-          );
-      }
-      if (errors.length)
-        return yield* Effect.fail(
-          new PassesError(
-            `Model compatibility check failed:\n${errors.map((error) => `  ${error}`).join("\n")}`,
-          ),
-        );
-      return catalog;
-    }),
-);
+export const checkCodexCompatibility = Effect.fn("Codex.checkCodexCompatibility")(function* (
+  plan: Plan,
+  fastModeRequested = false,
+) {
+  if (process.platform === "win32")
+    return yield* Effect.fail(
+      new PassesError(
+        "passes currently supports macOS and Linux; safe process-group cancellation requires POSIX.",
+      ),
+    );
+  const version = yield* runCommand("codex", ["--version"], plan.invocationDirectory);
+  const match = /codex(?:-cli)?\s+(\d+)\.(\d+)\.(\d+)/.exec(version.stdout);
+  if (version.code !== 0 || !match)
+    return yield* Effect.fail(
+      new PassesError(
+        `Could not determine Codex CLI version. Install Codex CLI 0.159.2 or newer. ${version.stderr.trim()}`,
+      ),
+    );
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3]);
+  if (major === 0 && (minor < 159 || (minor === 159 && patch < 2)))
+    return yield* Effect.fail(
+      new PassesError(
+        `Codex ${match[0]} is too old. Install Codex CLI 0.159.2 or newer for the verified model-catalog protocol and execution flags.`,
+      ),
+    );
+  const catalog = yield* loadModelCatalog(plan.invocationDirectory, fastModeRequested);
+  const errors: string[] = [];
+  for (const stage of plan.stages) {
+    const model = catalog.find((item) => item.model === stage.model);
+    if (!model)
+      errors.push(
+        `${stage.file}: model "${stage.model}" is not in the installed Codex catalog. Available models: ${catalog.map((m) => m.model).join(", ")}`,
+      );
+    else if (
+      !model.supportedReasoningEfforts.some(
+        (effort) => effort.reasoningEffort === stage.reasoning_effort,
+      )
+    )
+      errors.push(
+        `${stage.file}: reasoning_effort "${stage.reasoning_effort}" is unsupported for model "${stage.model}". Supported: ${model.supportedReasoningEfforts.map((e) => e.reasoningEffort).join(", ") || "none"}`,
+      );
+  }
+  if (errors.length)
+    return yield* Effect.fail(
+      new PassesError(
+        `Model compatibility check failed:\n${errors.map((error) => `  ${error}`).join("\n")}`,
+      ),
+    );
+  return catalog;
+});

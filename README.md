@@ -288,6 +288,15 @@ failure releases the process group with the same 500 ms escalation deadline.
 Its application entrypoint uses `BunRuntime.runMain`; JSONC and JSON parsing each
 have a single synchronous exception boundary.
 
+Reusable Effect functions use unnamed `Effect.fn` for diagnostic definition/call
+frames, with generator bodies passed directly when possible. Named `Effect.fn`
+operations retain spans for useful duration/failure telemetry. `Effect.gen` composes
+inline effects, including scoped bodies. `Effect.fnUntraced` would omit wrapper
+spans and diagnostic frames while preserving tracing inside the body; no current
+helper justifies that tradeoff. Pure functions stay ordinary functions. The line
+reporter's callbacks also stay ordinary functions because they consume buffered
+lines at call time; deferring that mutation would change which call owns the output.
+
 Discovery keeps Node's directory entries to ignore symlinks without extra file
 checks. Its single-operation adapter preserves native errors; `readdir` has no
 abort option, so Effect interruption stops traversal without cancelling the

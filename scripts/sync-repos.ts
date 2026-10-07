@@ -48,8 +48,11 @@ const reposDirectory = resolve(projectDirectory, "repos");
 const lockfilePath = resolve(projectDirectory, "bun.lock");
 // Match execFile's per-stream buffer bound without truncating successful Git output.
 const MAX_OUTPUT_BYTES = 1024 * 1024;
-const collectGitOutput = <E, R>(stream: Stream.Stream<Uint8Array, E, R>, channel: string) =>
-  stream.pipe(
+const collectGitOutput = Effect.fn(function* <E, R>(
+  stream: Stream.Stream<Uint8Array, E, R>,
+  channel: string,
+): Effect.fn.Return<string, E | Error, R> {
+  return yield* stream.pipe(
     Stream.runFoldEffect(
       () => ({ bytes: 0, chunks: [] as Uint8Array[] }),
       (output, chunk) => {
@@ -62,6 +65,7 @@ const collectGitOutput = <E, R>(stream: Stream.Stream<Uint8Array, E, R>, channel
     ),
     Effect.map(({ chunks }) => Buffer.concat(chunks).toString("utf8")),
   );
+});
 
 const runGit = Effect.fn("Repos.runGit")((directory: string, ...args: ReadonlyArray<string>) =>
   Effect.scoped(
