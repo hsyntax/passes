@@ -1,5 +1,5 @@
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Console, Effect, FileSystem, Result, Stream } from "effect";
+import { Console, Effect, FileSystem, Stream } from "effect";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { message } from "../src/errors.ts";
@@ -252,24 +252,21 @@ const main = Effect.gen(function* () {
     ).pipe(Effect.map((resolvedPackageVersions) => ({ repository, resolvedPackageVersions }))),
   );
   yield* fs.makeDirectory(reposDirectory, { recursive: true });
-  const results = yield* Effect.forEach(
+  const [, failures] = yield* Effect.partition(
     targets,
     ({ repository, resolvedPackageVersions }) =>
-      Effect.result(syncRepository(repository, resolvedPackageVersions)),
+      Effect.mapError(syncRepository(repository, resolvedPackageVersions), (error) => ({
+        error,
+        diagnostic: `${repository.packages[0].packageName}: ${message(error)}`,
+      })),
     { concurrency: "unbounded" },
-  );
-  const failures = results.flatMap((result, index) =>
-    Result.isFailure(result)
-      ? [
-          `${targets[index]?.repository.packages[0].packageName ?? "unknown repository"}: ${message(result.failure)}`,
-        ]
-      : [],
   );
   if (failures.length > 0)
     return yield* Effect.fail(
-      new Error(`${failures.length} repository sync(s) failed:\n${failures.join("\n")}`, {
-        cause: results.filter(Result.isFailure).map((result) => result.failure),
-      }),
+      new Error(
+        `${failures.length} repository sync(s) failed:\n${failures.map((failure) => failure.diagnostic).join("\n")}`,
+        { cause: failures.map((failure) => failure.error) },
+      ),
     );
 });
 

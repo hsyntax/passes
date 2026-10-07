@@ -38,32 +38,34 @@ export const waitForExit = Effect.fn("Process.waitForExit")((proc: ChildProcessH
   proc.exitCode.pipe(Effect.mapError((cause) => new PassesError(message(cause), { cause }))),
 );
 
-function captureOutputTail<E, R>(stream: Stream.Stream<Uint8Array, E, R>, limit: number) {
-  let contents = "";
-  const collect = stream.pipe(
-    Stream.decodeText,
-    Stream.runForEach((chunk) =>
-      Effect.sync(() => {
-        contents = (contents + chunk).slice(-limit);
-      }),
-    ),
-  );
-  return { collect, contents: () => contents };
-}
-
 export const runCommand = Effect.fn("Process.runCommand")(
   (command: string, args: readonly string[], workingDirectory: string) =>
     Effect.scoped(
       Effect.gen(function* () {
         const proc = yield* startProcess(command, args, workingDirectory);
-        const stdout = captureOutputTail(proc.stdout, 64_000);
-        const stderr = captureOutputTail(proc.stderr, 8_000);
-        const stdoutFiber = yield* Effect.forkScoped(stdout.collect);
-        const stderrFiber = yield* Effect.forkScoped(stderr.collect);
+        const stdoutFiber = yield* proc.stdout.pipe(
+          Stream.decodeText,
+          Stream.runFold(
+            () => "",
+            (contents, chunk) => (contents + chunk).slice(-64_000),
+          ),
+          Effect.forkScoped,
+        );
+        const stderrFiber = yield* proc.stderr.pipe(
+          Stream.decodeText,
+          Stream.runFold(
+            () => "",
+            (contents, chunk) => (contents + chunk).slice(-8_000),
+          ),
+          Effect.forkScoped,
+        );
         const code = yield* waitForExit(proc);
         // Descendants can inherit pipes after the leader exits. Bound the drain;
         // scope cleanup then terminates the group through the platform adapter.
-        yield* Effect.all([Fiber.join(stdoutFiber), Fiber.join(stderrFiber)]).pipe(
+        const [stdout, stderr] = yield* Effect.all([
+          Fiber.join(stdoutFiber),
+          Fiber.join(stderrFiber),
+        ]).pipe(
           Effect.timeout("1 second"),
           Effect.mapError(
             (error) =>
@@ -72,7 +74,7 @@ export const runCommand = Effect.fn("Process.runCommand")(
               }),
           ),
         );
-        return { code, stdout: stdout.contents(), stderr: stderr.contents() };
+        return { code, stdout, stderr };
       }),
     ).pipe(
       Effect.timeout("10 seconds"),
